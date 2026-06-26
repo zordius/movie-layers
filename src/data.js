@@ -100,10 +100,10 @@ export class DataSet {
     return [...this.channels.keys()]
   }
 
-  static async load(dataProviders, config = {}) {
+  static async load(dataProviders, { sources = [], config = {} } = {}) {
     const set = new DataSet()
     for (const provider of dataProviders) {
-      const result = await provider.load(config)
+      const result = await provider.load({ sources, config })
       const channels = result?.channels ?? {}
       for (const [name, ch] of Object.entries(channels)) {
         set.addChannel(name, ch.unit, ch.samples ?? [])

@@ -4,7 +4,7 @@ import { FfmpegPipe } from './ffmpeg.js'
 import { Registry } from './layer.js'
 import { DataSet } from './data.js'
 import { Timeline } from './timeline.js'
-import { probeVideo } from './probe.js'
+import { Source } from './source.js'
 
 /** Normalise a wall-clock anchor (Date | epoch-ms | ISO string) to epoch ms. */
 function toEpochMs(v) {
@@ -77,10 +77,14 @@ export class Engine {
 
   /** Fill geometry / duration / anchor from the base video when not explicit. */
   async _resolve() {
-    let probed = null
-    if (this.baseVideo && !this._segmentsOpt) {
-      probed = await probeVideo(this.baseVideo, this.ffmpegOptions)
-    }
+    // A single base video → one shared Source (probed once, shared with providers).
+    // Multi-segment with files is future work; for now segments carry no source.
+    this.sources =
+      this.baseVideo && !this._segmentsOpt
+        ? [new Source(this.baseVideo, { ffmpeg: this.ffmpegOptions.ffmpeg, ffprobe: this.ffmpegOptions.ffprobe })]
+        : []
+
+    const probed = this.sources.length ? await this.sources[0].info() : null
 
     this.width = this._width ?? probed?.width ?? null
     this.height = this._height ?? probed?.height ?? null
@@ -100,6 +104,10 @@ export class Engine {
       }
       const startUtc = toEpochMs(this._startDateTime) ?? probed?.creationTime ?? null
       this.segments = [{ durationSec, startUtc }]
+      if (this.sources.length) {
+        this.sources[0].offset = 0
+        this.sources[0].startUtc = startUtc
+      }
     }
   }
 
@@ -109,8 +117,12 @@ export class Engine {
     const canvas = createCanvas(this.width, this.height)
     const ctx = canvas.getContext('2d')
 
-    // load all data providers once, up front (parse → channels)
-    const dataset = await DataSet.load(this.dataProviders, this.dataConfig)
+    // load all data providers once, up front (parse → channels); each gets the
+    // shared sources + its own config
+    const dataset = await DataSet.load(this.dataProviders, {
+      sources: this.sources,
+      config: this.dataConfig,
+    })
 
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {

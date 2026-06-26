@@ -25,28 +25,22 @@ function runJson(bin, args) {
   })
 }
 
-/**
- * Probe a video's container metadata (CONFIG, not data — it's all constant).
- * One ffprobe pass; the engine uses it to derive canvas size / duration /
- * wall-clock anchor for a base video. This is the analog of the Python
- * project's `find_recording`.
- *
- * @returns {{width:number, height:number, fps:number|null, durationSec:number|null, creationTime:number|null}}
- *          creationTime in epoch ms (or null). Note: creation_time can be wrong
- *          (camera clock); a GPS-derived anchor from a data provider overrides it.
- */
-export async function probeVideo(path, { ffprobe = 'ffprobe' } = {}) {
-  const json = await runJson(ffprobe, [
+/** Raw ffprobe JSON: { streams, format }. The shared-probe primitive. */
+export async function probeContainer(path, { ffprobe = 'ffprobe' } = {}) {
+  return runJson(ffprobe, [
     '-hide_banner',
     '-print_format', 'json',
     '-show_streams',
     '-show_format',
     path,
   ])
+}
 
+/** Derive the constant config fields (CONFIG, not data) from raw ffprobe JSON. */
+export function deriveInfo(json) {
   const streams = json.streams ?? []
   const v = streams.find((s) => s.codec_type === 'video')
-  if (!v) throw new Error(`No video stream found in ${path}`)
+  if (!v) throw new Error('No video stream found')
 
   const [num, den] = (v.avg_frame_rate ?? '0/1').split('/').map(Number)
   const fps = den ? num / den : null
@@ -58,11 +52,15 @@ export async function probeVideo(path, { ffprobe = 'ffprobe' } = {}) {
   const ctMs = ct ? Date.parse(ct) : NaN
   const creationTime = Number.isNaN(ctMs) ? null : ctMs
 
-  return {
-    width: v.width,
-    height: v.height,
-    fps,
-    durationSec,
-    creationTime,
-  }
+  return { width: v.width, height: v.height, fps, durationSec, creationTime }
+}
+
+/**
+ * Probe a video's container metadata (CONFIG, not data — all constant). One
+ * ffprobe pass; the engine uses it to derive canvas size / duration / wall-clock
+ * anchor. creationTime in epoch ms (or null) — can be wrong (camera clock); a
+ * GPS-derived anchor from a data provider overrides it.
+ */
+export async function probeVideo(path, opts = {}) {
+  return deriveInfo(await probeContainer(path, opts))
 }
