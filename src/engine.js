@@ -4,6 +4,7 @@ import { FfmpegPipe } from './ffmpeg.js'
 import { Registry } from './layer.js'
 import { DataSet } from './data.js'
 import { Timeline } from './timeline.js'
+import { probeVideo } from './probe.js'
 
 /** Normalise a wall-clock anchor (Date | epoch-ms | ISO string) to epoch ms. */
 function toEpochMs(v) {
@@ -18,29 +19,26 @@ function toEpochMs(v) {
 }
 
 /**
- * The compositor. Loads data providers once, then for each frame clears the
- * canvas, draws every layer bottom→top into one RGBA frame, and pipes it to
- * ffmpeg.
+ * The compositor. Resolves config (probing the base video when needed), loads
+ * data providers once, then for each frame clears the canvas, draws every layer
+ * bottom→top into one RGBA frame, and pipes it to ffmpeg.
  *
- * The `frame` handed to each layer carries:
- *  - playback clock (continuous): index, frameCount, isFirst, isLast, timeSec,
- *    dt, progress, durationSec, fps
- *  - segment + wall clock: segment{index,localIndex,localTimeSec,startUtc},
- *    dateTime (= segment.startUtc + localTime, may jump across a gap; null when
- *    no anchor), timezone
- *  - data: time-bound accessor — get/series/stats/unit/has (interpolated at timeSec)
- *  - geometry: width, height
+ * Config precedence is `explicit > probed > error`: width/height/durationSec and
+ * the wall-clock anchor default from the base video's container metadata when
+ * not given explicitly. (A GPS-derived anchor from a data provider will later
+ * override probed creation_time.)
  *
- * Time fields are engine-intrinsic (timeline + config). Channel values come
- * from data providers; the engine only brokers and interpolates them.
+ * The `frame` handed to each layer carries playback clock (index, frameCount,
+ * isFirst, isLast, timeSec, dt, progress, durationSec, fps), segment + wall
+ * clock (segment, dateTime, timezone), data accessor, and geometry.
  */
 export class Engine {
   constructor({
-    width,
-    height,
+    width = null,
+    height = null,
     fps = 30,
     inputFps = null, // rate we produce frames at; defaults to fps
-    durationSec, // single-segment length (ignored when `segments` given)
+    durationSec = null, // single-segment length (ignored when `segments` given)
     segments = null, // [{ durationSec, startUtc }] for multi-video concat
     startDateTime = null, // single-segment wall-clock anchor (Date | ms | ISO)
     timezone = null, // display tz for dateTime
@@ -53,8 +51,6 @@ export class Engine {
     layout = [], // [{ type, ...config }] resolved against providers
     ffmpegOptions = {},
   }) {
-    this.width = width
-    this.height = height
     this.fps = fps
     this.inputFps = inputFps ?? fps
     this.timezone = timezone
@@ -67,20 +63,49 @@ export class Engine {
     this.layoutSpec = layout
     this.ffmpegOptions = ffmpegOptions
 
-    if (segments) {
-      this.segments = segments.map((s) => ({
+    // raw config — resolved (possibly via probe) in render()
+    this._width = width
+    this._height = height
+    this._durationSec = durationSec
+    this._segmentsOpt = segments
+    this._startDateTime = startDateTime
+
+    this.width = null
+    this.height = null
+    this.segments = null
+  }
+
+  /** Fill geometry / duration / anchor from the base video when not explicit. */
+  async _resolve() {
+    let probed = null
+    if (this.baseVideo && !this._segmentsOpt) {
+      probed = await probeVideo(this.baseVideo, this.ffmpegOptions)
+    }
+
+    this.width = this._width ?? probed?.width ?? null
+    this.height = this._height ?? probed?.height ?? null
+    if (this.width == null || this.height == null) {
+      throw new Error('Engine needs `width`/`height` (or a `baseVideo` to derive them from)')
+    }
+
+    if (this._segmentsOpt) {
+      this.segments = this._segmentsOpt.map((s) => ({
         durationSec: s.durationSec,
         startUtc: toEpochMs(s.startUtc),
       }))
     } else {
+      const durationSec = this._durationSec ?? probed?.durationSec ?? null
       if (durationSec == null) {
-        throw new Error('Engine needs either `durationSec` or `segments`')
+        throw new Error('Engine needs `durationSec` (or a `baseVideo` to derive it from)')
       }
-      this.segments = [{ durationSec, startUtc: toEpochMs(startDateTime) }]
+      const startUtc = toEpochMs(this._startDateTime) ?? probed?.creationTime ?? null
+      this.segments = [{ durationSec, startUtc }]
     }
   }
 
   async render() {
+    await this._resolve()
+
     const canvas = createCanvas(this.width, this.height)
     const ctx = canvas.getContext('2d')
 
