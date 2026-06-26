@@ -3,7 +3,21 @@
  * or a full-frame SVG animation are all just Layers — composited bottom→top
  * into a single RGBA frame.
  *
- * @typedef {{ index: number, timeSec: number, width: number, height: number, fps: number }} Frame
+ * @typedef {Object} Frame
+ * @property {number} index        global frame index
+ * @property {number} frameCount   total frames
+ * @property {boolean} isFirst
+ * @property {boolean} isLast
+ * @property {number} timeSec      playback seconds (continuous across segments)
+ * @property {number} dt           seconds since previous frame (1/fps)
+ * @property {number} progress     0..1 through the movie
+ * @property {number} durationSec  total length
+ * @property {number} fps
+ * @property {{index:number,localIndex:number,localTimeSec:number,startUtc:number|null}} segment
+ * @property {Date|null} dateTime  segment.startUtc + localTime (may jump on a gap; null if no anchor)
+ * @property {string|null} timezone
+ * @property {number} width
+ * @property {number} height
  */
 export class Layer {
   /**

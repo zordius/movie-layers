@@ -1,21 +1,66 @@
 /**
- * Maps global time → frame indices and steps the render loop.
+ * Segment-based timeline.
  *
- * For now this is a simple uniform stepper. It is the seam where multi-input
- * sync will live later: mapping global t → each layer's local sample (a video
- * layer's frame, a telemetry sample, an SVG keyframe), the generalisation of
- * gopro-dashboard-overlay's stepper + timelapse_correction.
+ * Two clocks, on purpose:
+ *  - PLAYBACK time is continuous across segments (concat plays back-to-back) —
+ *    `timeSec` / frame index never jump.
+ *  - WALL-CLOCK comes from each segment's own anchor (`startUtc`), so dateTime
+ *    (computed in the engine as startUtc + localTime) can jump across a
+ *    real-world gap between segments while playback time does not.
+ *
+ * A single video is just N=1 segments — no special case.
+ *
+ * @param {{ durationSec: number, startUtc: number|null }[]} segments
+ *        startUtc = epoch ms (or null when no anchor)
+ * @param {number} fps  frame production rate
  */
 export class Timeline {
-  constructor({ durationSec, fps }) {
-    this.durationSec = durationSec
+  constructor({ segments, fps }) {
     this.fps = fps
-    this.frameCount = Math.round(durationSec * fps)
+    this.segments = []
+
+    let globalStart = 0 // playback seconds — accumulates durations only (NOT gaps)
+    let firstFrame = 0
+    for (const seg of segments) {
+      const frameCount = Math.max(0, Math.round(seg.durationSec * fps))
+      this.segments.push({
+        durationSec: seg.durationSec,
+        startUtc: seg.startUtc ?? null,
+        globalStart,
+        firstFrame,
+        frameCount,
+      })
+      globalStart += seg.durationSec
+      firstFrame += frameCount
+    }
+
+    this.durationSec = globalStart
+    this.frameCount = firstFrame
+  }
+
+  _segmentForFrame(index) {
+    for (let s = 0; s < this.segments.length; s++) {
+      const seg = this.segments[s]
+      if (index < seg.firstFrame + seg.frameCount) return [seg, s]
+    }
+    const s = this.segments.length - 1
+    return [this.segments[s], s]
   }
 
   *steps() {
     for (let index = 0; index < this.frameCount; index++) {
-      yield { index, timeSec: index / this.fps }
+      const [seg, s] = this._segmentForFrame(index)
+      const localIndex = index - seg.firstFrame
+      yield {
+        index,
+        timeSec: index / this.fps,
+        segment: {
+          index: s,
+          localIndex,
+          localTimeSec: localIndex / this.fps,
+          startUtc: seg.startUtc,
+        },
+      }
     }
   }
 }
