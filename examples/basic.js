@@ -1,9 +1,10 @@
-// Minimal end-to-end demo: an inline provider, no base video, → out.mp4
-// Exercises the richer frame: timeSec, progress, dateTime, index/frameCount.
+// Minimal end-to-end demo: inline layer + data providers, no base video → out.mp4
+// Exercises the richer frame (timeSec, progress, dateTime) AND the data layer
+// (frame.data.get/stats/unit + needs validation).
 //
 //   npm install && npm run example
 //
-import { Engine, Layer, defineProvider } from '../src/index.js'
+import { Engine, Layer, defineProvider, defineDataProvider } from '../src/index.js'
 
 // a sliding box — uses playback time
 class DemoBox extends Layer {
@@ -46,11 +47,36 @@ class Hud extends Layer {
   }
 }
 
+// a data-driven layer — reads an interpolated channel + whole-series stats
+class SpeedReadout extends Layer {
+  draw(ctx, frame) {
+    const speed = frame.data.get('speed') // interpolated at frame.timeSec
+    const s = frame.data.stats('speed') // whole-series aggregate
+    ctx.fillStyle = '#fff'
+    ctx.font = 'bold 64px sans-serif'
+    ctx.fillText(`${speed.toFixed(1)} ${frame.data.unit('speed')}`, 40, frame.height - 150)
+    ctx.font = '24px sans-serif'
+    ctx.fillStyle = 'rgba(255,255,255,0.6)'
+    ctx.fillText(`max ${s.max.toFixed(1)}`, 40, frame.height - 115)
+  }
+}
+
+// a data provider: synthetic 1Hz speed track — the engine interpolates between
+const dataDemo = defineDataProvider({
+  name: 'demo-data',
+  async load() {
+    const samples = []
+    for (let t = 0; t <= 5; t++) samples.push({ t, value: 20 + 15 * Math.sin(t) })
+    return { channels: { speed: { unit: 'km/h', samples } }, timeRange: [0, 5] }
+  },
+})
+
 const demoProvider = defineProvider({
   name: 'demo',
   layers: {
     'demo-box': (config) => new DemoBox(config),
     hud: () => new Hud(),
+    'speed-readout': { needs: ['speed'], create: () => new SpeedReadout() },
   },
 })
 
@@ -65,9 +91,11 @@ await new Engine({
   background: '#101014',
   output: 'out.mp4',
   providers: [demoProvider],
+  dataProviders: [dataDemo],
   layout: [
     { type: 'demo-box', color: '#0a84ff', size: 160 },
     { type: 'hud' },
+    { type: 'speed-readout' },
   ],
 }).render()
 

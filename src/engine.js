@@ -2,6 +2,7 @@ import { createCanvas } from '@napi-rs/canvas'
 
 import { FfmpegPipe } from './ffmpeg.js'
 import { Registry } from './layer.js'
+import { DataSet } from './data.js'
 import { Timeline } from './timeline.js'
 
 /** Normalise a wall-clock anchor (Date | epoch-ms | ISO string) to epoch ms. */
@@ -17,8 +18,9 @@ function toEpochMs(v) {
 }
 
 /**
- * The compositor. For each frame it clears the canvas, draws every layer
- * bottom→top into one RGBA frame, and pipes it to ffmpeg.
+ * The compositor. Loads data providers once, then for each frame clears the
+ * canvas, draws every layer bottom→top into one RGBA frame, and pipes it to
+ * ffmpeg.
  *
  * The `frame` handed to each layer carries:
  *  - playback clock (continuous): index, frameCount, isFirst, isLast, timeSec,
@@ -26,11 +28,11 @@ function toEpochMs(v) {
  *  - segment + wall clock: segment{index,localIndex,localTimeSec,startUtc},
  *    dateTime (= segment.startUtc + localTime, may jump across a gap; null when
  *    no anchor), timezone
+ *  - data: time-bound accessor — get/series/stats/unit/has (interpolated at timeSec)
  *  - geometry: width, height
  *
- * None of this comes from a data provider — it's engine-intrinsic (timeline +
- * config). Only the per-segment startUtc anchor may originate upstream (config
- * now; a gopro provider's GPS back-calc later); the engine just adds local time.
+ * Time fields are engine-intrinsic (timeline + config). Channel values come
+ * from data providers; the engine only brokers and interpolates them.
  */
 export class Engine {
   constructor({
@@ -45,7 +47,9 @@ export class Engine {
     background = null, // css colour to clear with; null = transparent
     baseVideo = null, // single optional base video (always the bottom layer)
     output,
-    providers = [],
+    providers = [], // layer providers
+    dataProviders = [], // data providers (time-varying channels)
+    dataConfig = {}, // passed to each dataProvider.load(config)
     layout = [], // [{ type, ...config }] resolved against providers
     ffmpegOptions = {},
   }) {
@@ -58,6 +62,8 @@ export class Engine {
     this.baseVideo = baseVideo
     this.output = output
     this.registry = new Registry(providers)
+    this.dataProviders = dataProviders
+    this.dataConfig = dataConfig
     this.layoutSpec = layout
     this.ffmpegOptions = ffmpegOptions
 
@@ -78,9 +84,25 @@ export class Engine {
     const canvas = createCanvas(this.width, this.height)
     const ctx = canvas.getContext('2d')
 
-    const layers = this.layoutSpec.map(({ type, ...config }) =>
-      this.registry.create(type, config, ctx),
-    )
+    // load all data providers once, up front (parse → channels)
+    const dataset = await DataSet.load(this.dataProviders, this.dataConfig)
+
+    // build layers, then fail fast if a declared data need is unmet
+    const built = this.layoutSpec.map(({ type, ...config }) => {
+      const reg = this.registry.get(type)
+      return { type, needs: reg.needs, instance: reg.create(config, ctx) }
+    })
+    for (const { type, needs } of built) {
+      for (const ch of needs) {
+        if (!dataset.has(ch)) {
+          throw new Error(
+            `Layer "${type}" needs data channel "${ch}", but no data provider supplies it ` +
+              `(available: ${dataset.list().join(', ') || 'none'})`,
+          )
+        }
+      }
+    }
+    const data = dataset.view()
 
     const anchorMs = this.segments[0].startUtc
     const pipe = new FfmpegPipe({
@@ -107,6 +129,7 @@ export class Engine {
           ctx.fillRect(0, 0, this.width, this.height)
         }
 
+        data._t = timeSec
         const dateTime =
           segment.startUtc != null
             ? new Date(segment.startUtc + segment.localTimeSec * 1000)
@@ -127,15 +150,16 @@ export class Engine {
           segment,
           dateTime,
           timezone: this.timezone,
-          // geometry
+          // data + geometry
+          data,
           width: this.width,
           height: this.height,
         }
 
-        for (const layer of layers) layer.draw(ctx, frame)
+        for (const { instance } of built) instance.draw(ctx, frame)
 
-        const { data } = ctx.getImageData(0, 0, this.width, this.height)
-        await pipe.writeFrame(Buffer.from(data.buffer, data.byteOffset, data.byteLength))
+        const { data: pixels } = ctx.getImageData(0, 0, this.width, this.height)
+        await pipe.writeFrame(Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength))
       }
     } finally {
       await pipe.finish()
