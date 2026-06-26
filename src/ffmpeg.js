@@ -1,19 +1,22 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { writeFileSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+let seq = 0
 
 /**
- * The ffmpeg seam. Two modes, inherited from gopro-dashboard-overlay:
+ * The ffmpeg seam. Modes (inherited from gopro-dashboard-overlay):
  *
- *   - base video present -> ffmpeg lays our composited RGBA frame on top:
- *       [0:v] = base video (bottom)   [1:v] = our frame (top)   filter = overlay
- *   - no base video      -> ffmpeg just encodes our RGBA frames.
+ *   - 0 base videos → encode our RGBA frames.
+ *   - 1 base video  → [0:v][1:v]overlay (our frame on top).
+ *   - N base videos → concat demuxer presents them as ONE logical [0:v]
+ *                     (parts of the same trip, identical codec/res/fps), then
+ *                     the same single overlay. ffmpeg owns all video pixels.
  *
- * Everything else (gauges, SVG, maps, …) is composited by *us* into the one
- * RGBA frame before it reaches here. ffmpeg only ever does a single `overlay`.
- *
- * Backpressure is honoured in writeFrame(): when ffmpeg can't keep up, the
- * write awaits 'drain' — that blocking IS the flow control, and means ffmpeg
- * is saturated (encode-bound, which is the optimal steady state).
+ * Backpressure is honoured in writeFrame(): when ffmpeg can't keep up the write
+ * awaits 'drain' — that blocking IS flow control (ffmpeg saturated = optimal).
  */
 export class FfmpegPipe {
   constructor({
@@ -21,7 +24,7 @@ export class FfmpegPipe {
     height,
     fps = 30, // output framerate
     inputFps = 10, // rate at which we produce frames (gopro overlays at 10)
-    baseVideo = null, // path to the single optional base video
+    baseVideos = [], // 0/1/N base video files (the bottom layer; >1 → concat)
     output,
     ffmpeg = 'ffmpeg',
     pixfmt = 'rgba', // getImageData() gives straight-alpha RGBA
@@ -34,7 +37,7 @@ export class FfmpegPipe {
       height,
       fps,
       inputFps,
-      baseVideo,
+      baseVideos,
       output,
       ffmpeg,
       pixfmt,
@@ -42,6 +45,17 @@ export class FfmpegPipe {
       filter,
       creationTime,
     })
+    this._concatFile = null
+  }
+
+  _baseInput() {
+    if (this.baseVideos.length === 0) return []
+    if (this.baseVideos.length === 1) return ['-i', this.baseVideos[0]]
+    // N → concat demuxer over a list file
+    this._concatFile = join(tmpdir(), `ml-concat-${process.pid}-${seq++}.txt`)
+    const lines = this.baseVideos.map((f) => `file '${resolve(f)}'`).join('\n')
+    writeFileSync(this._concatFile, lines + '\n')
+    return ['-f', 'concat', '-safe', '0', '-i', this._concatFile]
   }
 
   start() {
@@ -54,11 +68,11 @@ export class FfmpegPipe {
       '-i', 'pipe:0',
     ]
 
-    let args
-    if (this.baseVideo) {
-      args = ['-hide_banner', '-y', '-i', this.baseVideo, ...rawIn, '-filter_complex', this.filter]
+    const args = ['-hide_banner', '-y']
+    if (this.baseVideos.length >= 1) {
+      args.push(...this._baseInput(), ...rawIn, '-filter_complex', this.filter)
     } else {
-      args = ['-hide_banner', '-y', ...rawIn]
+      args.push(...rawIn)
     }
 
     args.push('-r', String(this.fps), ...this.outputArgs)
@@ -80,6 +94,13 @@ export class FfmpegPipe {
   async finish() {
     this.proc.stdin.end()
     const [code] = await this.closed
+    if (this._concatFile) {
+      try {
+        unlinkSync(this._concatFile)
+      } catch {
+        /* best-effort */
+      }
+    }
     if (code !== 0) throw new Error(`ffmpeg exited with code ${code}`)
   }
 }

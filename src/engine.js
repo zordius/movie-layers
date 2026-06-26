@@ -75,40 +75,71 @@ export class Engine {
     this.segments = null
   }
 
-  /** Fill geometry / duration / anchor from the base video when not explicit. */
+  /**
+   * Normalise inputs to a per-segment list, probe each file segment once
+   * (shared Source), then derive geometry + per-segment duration / offset /
+   * wall-clock anchor. Precedence `explicit > probed`. Playback `offset` is
+   * cumulative duration (gaps not counted); `startUtc` is per segment.
+   *
+   * Clock resolution here is the structural part only — explicit `startUtc` else
+   * the segment's `creation_time`. The GPS-candidate / continue-time / gap /
+   * confidence machinery (spec §5) is deferred (needs provider-gopro).
+   */
   async _resolve() {
-    // A single base video → one shared Source (probed once, shared with providers).
-    // Multi-segment with files is future work; for now segments carry no source.
-    this.sources =
-      this.baseVideo && !this._segmentsOpt
-        ? [new Source(this.baseVideo, { ffmpeg: this.ffmpegOptions.ffmpeg, ffprobe: this.ffmpegOptions.ffprobe })]
-        : []
-
-    const probed = this.sources.length ? await this.sources[0].info() : null
-
-    this.width = this._width ?? probed?.width ?? null
-    this.height = this._height ?? probed?.height ?? null
-    if (this.width == null || this.height == null) {
-      throw new Error('Engine needs `width`/`height` (or a `baseVideo` to derive them from)')
-    }
-
+    // segment specs: explicit segments > single baseVideo > synthetic (durationSec)
+    let specs
     if (this._segmentsOpt) {
-      this.segments = this._segmentsOpt.map((s) => ({
-        durationSec: s.durationSec,
-        startUtc: toEpochMs(s.startUtc),
-      }))
+      specs = this._segmentsOpt
+    } else if (this.baseVideo) {
+      specs = [{ file: this.baseVideo }]
     } else {
-      const durationSec = this._durationSec ?? probed?.durationSec ?? null
-      if (durationSec == null) {
-        throw new Error('Engine needs `durationSec` (or a `baseVideo` to derive it from)')
+      if (this._durationSec == null) {
+        throw new Error('Engine needs one of: `durationSec`, `baseVideo`, or `segments`')
       }
-      const startUtc = toEpochMs(this._startDateTime) ?? probed?.creationTime ?? null
-      this.segments = [{ durationSec, startUtc }]
-      if (this.sources.length) {
-        this.sources[0].offset = 0
-        this.sources[0].startUtc = startUtc
+      specs = [{ durationSec: this._durationSec, startUtc: this._startDateTime }]
+    }
+
+    const ff = { ffmpeg: this.ffmpegOptions.ffmpeg, ffprobe: this.ffmpegOptions.ffprobe }
+    this.sources = specs.map((s) => (s.file ? new Source(s.file, ff) : null))
+    const infos = await Promise.all(this.sources.map((src) => (src ? src.info() : null)))
+
+    // geometry: explicit, else first file segment's probe
+    const firstInfo = infos.find(Boolean) ?? null
+    this.width = this._width ?? firstInfo?.width ?? null
+    this.height = this._height ?? firstInfo?.height ?? null
+    if (this.width == null || this.height == null) {
+      throw new Error('Engine needs `width`/`height` (or a file-bearing segment to derive them from)')
+    }
+
+    // concat (stream-copy) requires identical dimensions across file segments
+    const fileInfos = infos.filter(Boolean)
+    for (const fi of fileInfos) {
+      if (fi.width !== fileInfos[0].width || fi.height !== fileInfos[0].height) {
+        throw new Error(
+          `segments must share dimensions for concat ` +
+            `(got ${fileInfos[0].width}x${fileInfos[0].height} and ${fi.width}x${fi.height})`,
+        )
       }
     }
+
+    // segments + cumulative offsets + per-segment anchors
+    let offset = 0
+    this.segments = specs.map((s, i) => {
+      const durationSec = s.durationSec ?? infos[i]?.durationSec ?? null
+      if (durationSec == null) {
+        throw new Error(`segment ${i} needs a \`durationSec\` or a probeable \`file\``)
+      }
+      const startUtc = toEpochMs(s.startUtc) ?? infos[i]?.creationTime ?? null
+      if (this.sources[i]) {
+        this.sources[i].offset = offset
+        this.sources[i].startUtc = startUtc
+      }
+      offset += durationSec
+      return { durationSec, startUtc }
+    })
+
+    // base video file list for ffmpeg (concat when >1)
+    this.baseVideos = specs.filter((s) => s.file).map((s) => s.file)
   }
 
   async render() {
@@ -120,7 +151,7 @@ export class Engine {
     // load all data providers once, up front (parse → channels); each gets the
     // shared sources + its own config
     const dataset = await DataSet.load(this.dataProviders, {
-      sources: this.sources,
+      sources: this.sources.filter(Boolean),
       config: this.dataConfig,
     })
 
@@ -147,7 +178,7 @@ export class Engine {
       height: this.height,
       fps: this.fps,
       inputFps: this.inputFps,
-      baseVideo: this.baseVideo,
+      baseVideos: this.baseVideos,
       output: this.output,
       pixfmt: 'rgba',
       creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
