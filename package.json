@@ -1,0 +1,33 @@
+{
+  "name": "movie-layers",
+  "version": "0.0.1",
+  "description": "Compose pluggable layers (telemetry widgets, SVG, maps, …) into video — rendered per-frame and piped to ffmpeg. A general-purpose, provider-based reimagining of gopro-dashboard-overlay.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "example": "node examples/basic.js"
+  },
+  "keywords": [
+    "video",
+    "ffmpeg",
+    "overlay",
+    "compositor",
+    "layers",
+    "canvas",
+    "svg",
+    "gopro",
+    "gpx",
+    "fit",
+    "dashboard",
+    "telemetry"
+  ],
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.0"
+  }
+}
