@@ -9,11 +9,15 @@
  * This module knows nothing about GoPro/GPX — a provider (e.g. provider-gopro)
  * adapts a source into this shape.
  */
+/**
+ * Sugar for a data-only provider: `{ name, load }` → `{ name, data: load }`.
+ * Equivalent to `defineProvider({ name, data: load })`.
+ */
 export function defineDataProvider(spec) {
   if (!spec || typeof spec.name !== 'string' || typeof spec.load !== 'function') {
-    throw new Error('DataProvider must be { name: string, load: async (config) => { channels, timeRange? } }')
+    throw new Error('DataProvider must be { name: string, load: async ({sources,config}) => { channels } }')
   }
-  return spec
+  return { name: spec.name, data: spec.load }
 }
 
 /** Linear interpolation: number | number[] | {numeric fields}; else nearest. */
@@ -103,7 +107,7 @@ export class DataSet {
   static async load(dataProviders, { sources = [], config = {} } = {}) {
     const set = new DataSet()
     for (const provider of dataProviders) {
-      const result = await provider.load({ sources, config })
+      const result = await provider.data({ sources, config })
       const channels = result?.channels ?? {}
       for (const [name, ch] of Object.entries(channels)) {
         set.addChannel(name, ch.unit, ch.samples ?? [])

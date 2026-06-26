@@ -45,9 +45,9 @@ export class Engine {
     background = null, // css colour to clear with; null = transparent
     baseVideo = null, // single optional base video (always the bottom layer)
     output,
-    providers = [], // layer providers
-    dataProviders = [], // data providers (time-varying channels)
-    dataConfig = {}, // passed to each dataProvider.load(config)
+    providers = [], // unified providers — each may have a data and/or layers facet
+    dataProviders = [], // back-compat alias; merged into `providers`
+    dataConfig = {}, // passed to each data facet: data({ sources, config })
     layout = [], // [{ type, ...config }] resolved against providers
     ffmpegOptions = {},
   }) {
@@ -57,8 +57,10 @@ export class Engine {
     this.background = background
     this.baseVideo = baseVideo
     this.output = output
-    this.registry = new Registry(providers)
-    this.dataProviders = dataProviders
+    // route a single provider list by facet (dataProviders alias merged in)
+    const allProviders = [...providers, ...dataProviders]
+    this.registry = new Registry(allProviders.filter((p) => p.layers))
+    this.dataProviders = allProviders.filter((p) => typeof p.data === 'function')
     this.dataConfig = dataConfig
     this.layoutSpec = layout
     this.ffmpegOptions = ffmpegOptions

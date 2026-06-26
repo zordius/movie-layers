@@ -32,22 +32,38 @@ export class Layer {
 }
 
 /**
- * A provider module exports a Provider: a named bundle of layer registrations,
- * keyed by the `type` string used in a layout. A registration is either a
- * factory function, or `{ needs: [channel], create }` to declare the data
- * channels the layer reads (validated up-front against the loaded DataSet).
+ * A provider module exports a Provider: `{ name, data?, layers? }` — at least
+ * one facet.
+ *
+ *  - `data`   — async ({ sources, config }) => ({ channels, ... }); a
+ *               time-varying data source (see data.js).
+ *  - `layers` — map of `type` → factory `(config, ctx) => Layer`, or
+ *               `{ needs: [channel], create }` to declare the channels a layer
+ *               reads (validated up-front against the loaded DataSet).
+ *
+ * One package can ship both (e.g. provider-gopro: telemetry channels + widgets).
+ * The engine takes a single `providers: [...]` array and routes by facet.
  *
  *   export default defineProvider({
- *     name: 'demo',
- *     layers: {
- *       'demo-box': (config, ctx) => new DemoBox(config),
- *       'speed':    { needs: ['speed'], create: (config) => new SpeedGauge(config) },
- *     },
+ *     name: 'gopro',
+ *     data:   async ({ sources }) => ({ channels: await parse(sources) }),
+ *     layers: { 'speed': { needs: ['speed'], create: (c) => new SpeedGauge(c) } },
  *   })
  */
 export function defineProvider(spec) {
-  if (!spec || typeof spec.name !== 'string' || typeof spec.layers !== 'object') {
-    throw new Error('Provider must be { name: string, layers: { [type]: factory | {needs, create} } }')
+  if (!spec || typeof spec.name !== 'string') {
+    throw new Error('Provider must have a string `name`')
+  }
+  const hasData = spec.data !== undefined
+  const hasLayers = spec.layers !== undefined
+  if (!hasData && !hasLayers) {
+    throw new Error(`Provider "${spec.name}" must have a \`data\` and/or \`layers\` facet`)
+  }
+  if (hasData && typeof spec.data !== 'function') {
+    throw new Error(`Provider "${spec.name}" \`data\` must be an async function`)
+  }
+  if (hasLayers && (typeof spec.layers !== 'object' || spec.layers === null)) {
+    throw new Error(`Provider "${spec.name}" \`layers\` must be an object`)
   }
   return spec
 }
@@ -60,6 +76,7 @@ export class Registry {
   }
 
   add(provider) {
+    if (!provider.layers) return this // data-only provider — nothing to register here
     for (const [type, reg] of Object.entries(provider.layers)) {
       if (this.layers.has(type)) {
         throw new Error(`Duplicate layer type "${type}" (provider "${provider.name}")`)

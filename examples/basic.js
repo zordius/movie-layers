@@ -4,7 +4,7 @@
 //
 //   npm install && npm run example
 //
-import { Engine, Layer, defineProvider, defineDataProvider } from '../src/index.js'
+import { Engine, Layer, defineProvider } from '../src/index.js'
 
 // a sliding box — uses playback time
 class DemoBox extends Layer {
@@ -61,18 +61,17 @@ class SpeedReadout extends Layer {
   }
 }
 
-// a data provider: synthetic 1Hz speed track — the engine interpolates between
-const dataDemo = defineDataProvider({
-  name: 'demo-data',
-  async load() {
+// one combined provider — both facets: a data source AND its layers, shipped
+// together (the provider-gopro shape). The engine takes a single `providers`.
+const demo = defineProvider({
+  name: 'demo',
+  // data facet: synthetic 1Hz speed track — the engine interpolates between
+  async data() {
     const samples = []
     for (let t = 0; t <= 5; t++) samples.push({ t, value: 20 + 15 * Math.sin(t) })
     return { channels: { speed: { unit: 'km/h', samples } }, timeRange: [0, 5] }
   },
-})
-
-const demoProvider = defineProvider({
-  name: 'demo',
+  // layers facet
   layers: {
     'demo-box': (config) => new DemoBox(config),
     hud: () => new Hud(),
@@ -90,8 +89,7 @@ await new Engine({
   timezone: 'UTC',
   background: '#101014',
   output: 'out.mp4',
-  providers: [demoProvider],
-  dataProviders: [dataDemo],
+  providers: [demo],
   layout: [
     { type: 'demo-box', color: '#0a84ff', size: 160 },
     { type: 'hud' },
