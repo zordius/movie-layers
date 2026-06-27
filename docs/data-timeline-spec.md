@@ -174,17 +174,17 @@ Sidecar UTC alignment (external `.gpx`/`.fit`) is 🔜.
 
 ---
 
-## 5. Clock resolution (engine) — structural + per-segment GPS + continue-time + gap ✅; regression-verify 🔜
+## 5. Clock resolution (engine) — structural + per-segment GPS + continue-time + gap + regression-verify ✅
 
 Each segment's `startUtc` is resolved by the engine from candidate anchors. Done:
 the **structural** part (explicit `startUtc` else the segment's `creation_time`);
 **per-segment GPS** — a provider reports `clocks: [{ sourceIndex, startUtc,
 confidence:'gps' }]` and the engine upgrades each non-explicit segment over
 `creation_time`; **continue-time** — a weak segment inherits the nearest reliable
-neighbour's anchor via cumulative duration (marked `continued`); and **gap
+neighbour's anchor via cumulative duration (marked `continued`); **gap
 detection** — two *independent* reliable anchors disagreeing with cumulative
-duration flag a `gap`. `frame.segment` now carries `confidence` + `gap`. Only the
-regression-verified GPS gate below remains 🔜.
+duration flag a `gap`; and the **regression-verified true start** (below).
+`frame.segment` now carries `confidence` + `gap`.
 
 ### Precedence (per segment)
 ```
@@ -196,13 +196,13 @@ GPS (verified)  >  container creation_time  >  file mtime (untrusted)  >  none
   `clock: { startUtc, confidence:'gps', verified }`. "GPS" means **first good fix**
   (3D, low DOP, valid GPSU); robustness via **linear regression of UTC vs
   media-offset, slope ≈ 1**. Fails the quality gate → fall through.
-  *Status: `provider-gopro` reports a per-segment `clocks:[{ sourceIndex, startUtc,
-  confidence:'gps' }]` from each segment's first usable fix and the engine applies
-  them ✅; the regression `verified` gate (which needs the per-sample media offset,
-  not pulled by today's `timeIn:'GPS'` extract) is 🔜 — so a segment treats its
-  first-fix as its start, ignoring pre-lock delay. For continuous GoPro chapters
-  only chapter 1 is affected (the receiver stays locked across the rollover), and
-  continue-time could later back-derive even that from a clean later chapter.*
+  *Status ✅: `gpx-from-gopro` extracts each sample's media offset (`cts`) and
+  regresses UTC vs `cts` (`resolveStartUtc`); when slope ≈ 1 it returns the
+  extrapolated true start with `verified:true`, else falls back to first-fix.
+  `provider-gopro` anchors each segment on that — so a verified segment's first fix
+  lands `lockDelay` into playback (pre-display gray before lock, as intended), and
+  the engine still gets a per-segment `clocks` candidate. Optional future tweak:
+  back-derive a delayed first chapter from a clean later one via continue-time.*
 - **creation_time** — from the engine's probe. Camera clock; may be wrong.
 - **mtime** — often the copy/move time, not the recording time → **treat as
   untrusted**; prefer `dateTime = null` over showing a wrong date.
@@ -292,13 +292,14 @@ two-clock `Timeline`; multi-video concat (per-segment probe, cumulative offsets,
 per-segment `creation_time` anchors, concat list builder, dimension guard);
 channel-merge precedence; timezone resolution (explicit > provider > default);
 `provider-svg`; `provider-gopro` (gps/speed/altitude + derived gradient channels,
-GPS→tz timezone, per-segment GPS `clocks` candidates — adapts `gpx-stabilizer`,
+GPS→tz timezone, per-segment GPS `clocks` candidates — adapts `gpx-from-gopro`,
 multi-source offset-merge); **clock resolution** — per-segment pick (explicit >
-GPS > creation_time) + continue-time fill + gap detection, `frame.segment.{confidence,gap}`.
+GPS > creation_time) + continue-time fill + gap detection, `frame.segment.{confidence,gap}`;
+**regression-verified true start** (`gpx-from-gopro` regresses UTC vs media-offset
+`cts`, slope ≈ 1 gate; provider anchors on the verified start, restoring pre-display gray).
 
-🔜 Planned: the regression-`verified` GPS gate (true video-start via UTC-vs-media
-slope ≈ 1; needs media-offset extraction in `gpx-stabilizer`) and the optional
-back-derive of a delayed first chapter from a clean later one; sidecar
-(`.gpx`/`.fit`) UTC alignment; `sourceInPoint` (segment trimming); provider-private
-`setup` → shared resources; perf path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU
+🔜 Planned: optional back-derive of a delayed first chapter from a clean later one
+(via continue-time); sidecar (`.gpx`/`.fit`) UTC alignment; `sourceInPoint`
+(segment trimming); provider-private `setup` → shared resources; perf path
+(`toBuffer('raw')`/bgra, DoubleBuffer, GPU
 profiles).

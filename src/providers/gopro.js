@@ -58,24 +58,19 @@ function goodFixes(points) {
 
 /**
  * Append one segment's channel samples to the shared channel arrays, placing each
- * on the GLOBAL playback timeline: `t = segment offset + seconds-since-this-
- * segment's-first-fix`. Zeroing within-segment to the first fix (good[0]) — not
- * to container creation_time — keeps each segment's GPS self-consistent and
- * independent of a wrong/missing creation_time; adding the engine's playback
+ * on the GLOBAL playback timeline: `t = offset + (time − anchorUtc)/1000`. The
+ * caller passes the segment's wall-clock `anchorUtc` — the regression-verified
+ * true start when available, else its first fix — and the engine's playback
  * `offset` (cumulative prior durations) merges segments onto one timeline (§4).
+ * Anchoring to the GPS-derived start (not container creation_time) keeps each
+ * segment self-consistent and independent of a wrong/missing creation_time.
  *
- * NOTE (step 2a): first-fix is treated as the segment start, ignoring any pre-lock
- * delay; the regression-verified true-start refinement is a later step (§5). For
- * continuous GoPro chapters only chapter 1 has meaningful delay (the receiver
- * stays locked across the rollover), so later segments' first-fix ≈ true start.
- *
- * @returns {number|null} the segment's first-fix UTC (its wall-clock anchor), or
- *   null when the segment has no usable fix.
+ * With a verified anchor the first fix lands `lockDelay` seconds into the segment
+ * (gray pre-display before GPS lock); with the first-fix fallback it lands at the
+ * segment start (pre-lock delay unknown, left out).
  */
-function appendSegment(good, offset, channels, W, minSpan) {
-  if (good.length === 0) return null
-  const ref = good[0].time
-  const ts = good.map((p) => offset + (p.time - ref) / 1000)
+function appendSegment(good, anchorUtc, offset, channels, W, minSpan) {
+  const ts = good.map((p) => offset + (p.time - anchorUtc) / 1000)
   for (let i = 0; i < good.length; i++) {
     const p = good[i]
     channels.gps.samples.push({ t: ts[i], value: { lat: p.lat, lon: p.lon } })
@@ -101,7 +96,6 @@ function appendSegment(good, offset, channels, W, minSpan) {
     channels.gradient.samples.push({ t: ts[i], value: g })
     prev = g
   }
-  return ref
 }
 
 /**
@@ -162,8 +156,15 @@ export default function gopro(opts = {}) {
           ...(opts.stabilize != null ? { stabilize: opts.stabilize } : {}),
         })
         if (timezone == null && res.timezone) timezone = res.timezone // first segment with a tz wins
-        const ref = appendSegment(goodFixes(res.points), target.offset, channels, W, minSpan)
-        if (ref != null) clocks.push({ sourceIndex: target.sourceIndex, startUtc: ref, confidence: 'gps' })
+        const good = goodFixes(res.points)
+        if (good.length === 0) continue
+        // Anchor on the contract's best start: the regression-verified true-start
+        // (so the first fix sits lockDelay into playback, gray before it) when
+        // available, else this segment's own first fix (good[0]).
+        const verified = res.clock?.verified === true
+        const anchor = verified && finite(res.startUtc) ? res.startUtc : good[0].time
+        appendSegment(good, anchor, target.offset, channels, W, minSpan)
+        clocks.push({ sourceIndex: target.sourceIndex, startUtc: anchor, confidence: 'gps', verified })
       }
 
       // drop channels that stayed empty (e.g. no altitude anywhere)
