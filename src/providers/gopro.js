@@ -42,6 +42,72 @@ function haversineM(a, b) {
 const finite = (n) => typeof n === 'number' && Number.isFinite(n)
 
 /**
+ * Usable GPS fixes from a raw point list. Raw points carry `fix`; stabilized ones
+ * don't (stabilize reduces a point to {lat,lon,ele,time}). Filter to a real lock
+ * (3d/2d) when `fix` is present; otherwise trust stabilize to have dropped bad
+ * samples. Requires finite lat/lon/time.
+ */
+function goodFixes(points) {
+  const hasFix = points.some((p) => p && p.fix)
+  return points.filter(
+    (p) =>
+      p &&
+      finite(p.lat) &&
+      finite(p.lon) &&
+      finite(p.time) &&
+      (!hasFix || p.fix === '3d' || p.fix === '2d'),
+  )
+}
+
+/**
+ * Append one segment's channel samples to the shared channel arrays, placing each
+ * on the GLOBAL playback timeline: `t = segment offset + seconds-since-this-
+ * segment's-first-fix`. Zeroing within-segment to the first fix (good[0]) — not
+ * to container creation_time — keeps each segment's GPS self-consistent and
+ * independent of a wrong/missing creation_time; adding the engine's playback
+ * `offset` (cumulative prior durations) merges segments onto one timeline (§4).
+ *
+ * NOTE (step 2a): first-fix is treated as the segment start, ignoring any pre-lock
+ * delay; the regression-verified true-start refinement is a later step (§5). For
+ * continuous GoPro chapters only chapter 1 has meaningful delay (the receiver
+ * stays locked across the rollover), so later segments' first-fix ≈ true start.
+ *
+ * @returns {number|null} the segment's first-fix UTC (its wall-clock anchor), or
+ *   null when the segment has no usable fix.
+ */
+function appendSegment(good, offset, channels, W, minSpan) {
+  if (good.length === 0) return null
+  const ref = good[0].time
+  const ts = good.map((p) => offset + (p.time - ref) / 1000)
+  for (let i = 0; i < good.length; i++) {
+    const p = good[i]
+    channels.gps.samples.push({ t: ts[i], value: { lat: p.lat, lon: p.lon } })
+    if (finite(p.speed)) channels.speed.samples.push({ t: ts[i], value: p.speed * 3.6 }) // m/s → km/h
+    if (finite(p.ele)) channels.altitude.samples.push({ t: ts[i], value: p.ele })
+  }
+
+  // Gradient = Δaltitude / horizontal-distance over a ~W-metre baseline (not
+  // adjacent samples) to tame GPS vertical noise: the baseline is the most-recent
+  // earlier point ≥ W behind — dense samples smooth over ~W m, sparse samples
+  // (steps already > W apart) use the previous one. Cumulative distance is
+  // per-segment (resets each segment, since segments may be spatially disjoint).
+  const cum = [0]
+  for (let i = 1; i < good.length; i++) cum[i] = cum[i - 1] + haversineM(good[i - 1], good[i])
+  let lo = 0
+  let prev = 0
+  for (let i = 0; i < good.length; i++) {
+    if (!finite(good[i].ele)) continue
+    while (lo + 1 < i && cum[i] - cum[lo + 1] >= W) lo++ // most-recent point ≥ W behind
+    const span = cum[i] - cum[lo]
+    let g = prev
+    if (span >= minSpan && finite(good[lo].ele)) g = ((good[i].ele - good[lo].ele) / span) * 100
+    channels.gradient.samples.push({ t: ts[i], value: g })
+    prev = g
+  }
+  return ref
+}
+
+/**
  * Build the GoPro data provider.
  *
  * @param {object} [opts]
@@ -60,94 +126,57 @@ export default function gopro(opts = {}) {
   return {
     name: 'gopro',
     async data({ sources = [], config = {} }) {
-      const path = opts.file ?? config.goproFile ?? sources[0]?.file
-      if (!path) {
+      // Which sources to read telemetry from. An explicit file (factory opt /
+      // config) pins ONE source; otherwise every file-bearing base-video segment is
+      // read and offset-merged onto the global timeline (§4 multi-video).
+      let targets
+      const explicitPath = opts.file ?? config.goproFile
+      if (explicitPath) {
+        const idx = sources.findIndex((s) => s && s.file === explicitPath)
+        targets = [
+          { path: explicitPath, sourceIndex: idx >= 0 ? idx : 0, offset: idx >= 0 ? sources[idx].offset ?? 0 : 0 },
+        ]
+      } else {
+        targets = sources
+          .map((s, i) => (s && s.file ? { path: s.file, sourceIndex: i, offset: s.offset ?? 0 } : null))
+          .filter(Boolean)
+      }
+      if (targets.length === 0) {
         throw new Error(
           'provider-gopro: no telemetry source — pass gopro({ file }) or set a baseVideo',
         )
       }
 
-      const { points, timezone } = await readGoproTelemetry(path, {
-        ...(opts.rate != null ? { rate: opts.rate } : {}),
-        ...(opts.stabilize != null ? { stabilize: opts.stabilize } : {}),
-      })
-
-      // raw points carry `fix`; stabilized points don't (stabilize reduces a point
-      // to {lat,lon,ele,time}). Filter to a usable lock when we still have `fix`;
-      // otherwise trust stabilize to have dropped the bad samples.
-      const hasFix = points.some((p) => p && p.fix)
-      const good = points.filter(
-        (p) =>
-          p &&
-          finite(p.lat) &&
-          finite(p.lon) &&
-          finite(p.time) &&
-          (!hasFix || p.fix === '3d' || p.fix === '2d'),
-      )
-      if (good.length === 0) {
-        return { channels: {}, timezone: timezone ?? null }
-      }
-
-      // Anchor BOTH the channel clock and the wall-clock candidate to the first
-      // usable GPS fix (good[0]). Zeroing channels here — rather than to the
-      // container creation_time — keeps GPS alignment self-consistent and
-      // independent of a possibly-wrong creation_time, and shares one anchor with
-      // the `clock` candidate below, so dateTime and the samples never drift apart.
-      // NOTE (step 1): this treats first-fix as video start, ignoring any pre-lock
-      // delay; the regression-verified true-start refinement is step 2 (spec §5).
-      const ref = good[0].time
-      const ts = good.map((p) => (p.time - ref) / 1000)
-
       const maxGap = opts.maxGap ?? 3
-      const gps = { unit: 'deg', maxGap, samples: [] }
-      const speed = { unit: 'km/h', maxGap, samples: [] }
-      const altitude = { unit: 'm', maxGap, samples: [] }
-      for (let i = 0; i < good.length; i++) {
-        const p = good[i]
-        gps.samples.push({ t: ts[i], value: { lat: p.lat, lon: p.lon } })
-        if (finite(p.speed)) speed.samples.push({ t: ts[i], value: p.speed * 3.6 }) // m/s → km/h
-        if (finite(p.ele)) altitude.samples.push({ t: ts[i], value: p.ele })
-      }
-
-      // Gradient = Δaltitude / horizontal-distance, measured over a ~gradeWindowM
-      // baseline (not adjacent samples) to tame GPS vertical noise. The baseline is
-      // the most-recent earlier point at least W behind — so dense samples smooth
-      // over ~W m, while sparse samples (steps already > W apart) just use the
-      // previous one. Cumulative distance + a monotonic pointer keeps it O(n).
-      const gradient = { unit: '%', maxGap, samples: [] }
       const W = opts.gradeWindowM ?? 20
       const minSpan = 3 // m — below this, slope is dominated by GPS jitter
-      const cum = [0]
-      for (let i = 1; i < good.length; i++) {
-        cum[i] = cum[i - 1] + haversineM(good[i - 1], good[i])
+      const channels = {
+        gps: { unit: 'deg', maxGap, samples: [] },
+        speed: { unit: 'km/h', maxGap, samples: [] },
+        altitude: { unit: 'm', maxGap, samples: [] },
+        gradient: { unit: '%', maxGap, samples: [] },
       }
-      let lo = 0
-      let prev = 0
-      for (let i = 0; i < good.length; i++) {
-        if (!finite(good[i].ele)) continue
-        while (lo + 1 < i && cum[i] - cum[lo + 1] >= W) lo++ // most-recent point ≥ W behind
-        const span = cum[i] - cum[lo]
-        let g = prev
-        if (span >= minSpan && finite(good[lo].ele)) {
-          g = ((good[i].ele - good[lo].ele) / span) * 100
-        }
-        gradient.samples.push({ t: ts[i], value: g })
-        prev = g
+      const clocks = [] // per-segment GPS wall-clock candidates (§5)
+      let timezone = null
+
+      for (const target of targets) {
+        const res = await readGoproTelemetry(target.path, {
+          ...(opts.rate != null ? { rate: opts.rate } : {}),
+          ...(opts.stabilize != null ? { stabilize: opts.stabilize } : {}),
+        })
+        if (timezone == null && res.timezone) timezone = res.timezone // first segment with a tz wins
+        const ref = appendSegment(goodFixes(res.points), target.offset, channels, W, minSpan)
+        if (ref != null) clocks.push({ sourceIndex: target.sourceIndex, startUtc: ref, confidence: 'gps' })
       }
 
-      const channels = { gps }
-      if (speed.samples.length) channels.speed = speed
-      if (altitude.samples.length) channels.altitude = altitude
-      if (gradient.samples.length) channels.gradient = gradient
+      // drop channels that stayed empty (e.g. no altitude anywhere)
+      const out = {}
+      for (const [name, ch] of Object.entries(channels)) if (ch.samples.length) out[name] = ch
 
-      // timezone + GPS wall-clock candidate flow up to the engine; DataSet captures
-      // the first provider's tz and clock, and the engine adjudicates per spec §5
-      // (GPS > creation_time, explicit config still wins).
-      return {
-        channels,
-        timezone: timezone ?? null,
-        clock: { startUtc: ref, confidence: 'gps' },
-      }
+      // timezone + per-segment GPS clock candidates flow up to the engine; DataSet
+      // captures them and the engine adjudicates per spec §5 (explicit > GPS >
+      // creation_time; continue-time fills gaps; gap detection flags real breaks).
+      return { channels: out, timezone, clocks }
     },
   }
 }

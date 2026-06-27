@@ -26,6 +26,8 @@ export class Timeline {
       this.segments.push({
         durationSec: seg.durationSec,
         startUtc: seg.startUtc ?? null,
+        confidence: seg.clockSource ?? null, // how startUtc was resolved (§5): explicit|gps|continued|meta|none
+        gap: seg.gap ?? false, // a real-world break vs the previous independent anchor (§5)
         globalStart,
         firstFrame,
         frameCount,
@@ -59,6 +61,8 @@ export class Timeline {
           localIndex,
           localTimeSec: localIndex / this.fps,
           startUtc: seg.startUtc,
+          confidence: seg.confidence,
+          gap: seg.gap,
         },
       }
     }

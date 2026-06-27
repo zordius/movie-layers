@@ -167,20 +167,24 @@ files as one logical `[0:v]`; max 1 logical base input; `[0:v][1:v]overlay`). Th
 engine never touches video pixels. ✅ (per-segment probe, cumulative offsets,
 per-segment `creation_time` anchors, concat list builder, dimension guard)
 
-**Invocation.** The engine hands each provider the full `sources` list ✅.
-Applying each segment's `offset` when merging a provider's samples onto the
-global timeline is 🔜 (no embedded provider exists yet); sidecar UTC alignment 🔜.
+**Invocation.** The engine hands each provider the full `sources` list ✅, and a
+provider applies each segment's `offset` when merging its samples onto the global
+timeline ✅ (`provider-gopro` reads every file-bearing source and offset-merges).
+Sidecar UTC alignment (external `.gpx`/`.fit`) is 🔜.
 
 ---
 
-## 5. Clock resolution (engine) — structural + single-video GPS ✅; continue-time / gap / multi-segment 🔜
+## 5. Clock resolution (engine) — structural + per-segment GPS + continue-time + gap ✅; regression-verify 🔜
 
 Each segment's `startUtc` is resolved by the engine from candidate anchors. Done:
-the **structural** part (explicit `startUtc` else the segment's `creation_time`),
-**plus the single-video GPS candidate** — a data provider's `clock` upgrades the
-lone segment's anchor over `creation_time` (an explicit config anchor still wins).
-The continue-time / gap / per-segment (N>1) resolution and the regression-verified
-GPS gate below are 🔜.
+the **structural** part (explicit `startUtc` else the segment's `creation_time`);
+**per-segment GPS** — a provider reports `clocks: [{ sourceIndex, startUtc,
+confidence:'gps' }]` and the engine upgrades each non-explicit segment over
+`creation_time`; **continue-time** — a weak segment inherits the nearest reliable
+neighbour's anchor via cumulative duration (marked `continued`); and **gap
+detection** — two *independent* reliable anchors disagreeing with cumulative
+duration flag a `gap`. `frame.segment` now carries `confidence` + `gap`. Only the
+regression-verified GPS gate below remains 🔜.
 
 ### Precedence (per segment)
 ```
@@ -192,11 +196,13 @@ GPS (verified)  >  container creation_time  >  file mtime (untrusted)  >  none
   `clock: { startUtc, confidence:'gps', verified }`. "GPS" means **first good fix**
   (3D, low DOP, valid GPSU); robustness via **linear regression of UTC vs
   media-offset, slope ≈ 1**. Fails the quality gate → fall through.
-  *Status: `provider-gopro` reports `clock:{ startUtc, confidence:'gps' }` from the
-  first usable fix and the engine applies it (single-video) ✅; the regression
-  `verified` gate (which needs the per-sample media offset, not pulled by today's
-  `timeIn:'GPS'` extract) is 🔜 — so step 1 treats first-fix as video start,
-  ignoring pre-lock delay.*
+  *Status: `provider-gopro` reports a per-segment `clocks:[{ sourceIndex, startUtc,
+  confidence:'gps' }]` from each segment's first usable fix and the engine applies
+  them ✅; the regression `verified` gate (which needs the per-sample media offset,
+  not pulled by today's `timeIn:'GPS'` extract) is 🔜 — so a segment treats its
+  first-fix as its start, ignoring pre-lock delay. For continuous GoPro chapters
+  only chapter 1 is affected (the receiver stays locked across the rollover), and
+  continue-time could later back-derive even that from a clean later chapter.*
 - **creation_time** — from the engine's probe. Camera clock; may be wrong.
 - **mtime** — often the copy/move time, not the recording time → **treat as
   untrusted**; prefer `dateTime = null` over showing a wrong date.
@@ -286,11 +292,13 @@ two-clock `Timeline`; multi-video concat (per-segment probe, cumulative offsets,
 per-segment `creation_time` anchors, concat list builder, dimension guard);
 channel-merge precedence; timezone resolution (explicit > provider > default);
 `provider-svg`; `provider-gopro` (gps/speed/altitude + derived gradient channels,
-GPS→tz timezone, GPS `clock` candidate — adapts `gpx-stabilizer`); **single-video
-GPS clock upgrade** (explicit > GPS > creation_time).
+GPS→tz timezone, per-segment GPS `clocks` candidates — adapts `gpx-stabilizer`,
+multi-source offset-merge); **clock resolution** — per-segment pick (explicit >
+GPS > creation_time) + continue-time fill + gap detection, `frame.segment.{confidence,gap}`.
 
-🔜 Planned: clock resolution multi-segment half (per-segment GPS candidate →
-continue-time → gap → confidence) + the regression-`verified` GPS gate;
-embedded-provider multi-source data offset-merge; sidecar UTC alignment;
-`sourceInPoint` (segment trimming); provider-private `setup` → shared resources;
-perf path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU profiles).
+🔜 Planned: the regression-`verified` GPS gate (true video-start via UTC-vs-media
+slope ≈ 1; needs media-offset extraction in `gpx-stabilizer`) and the optional
+back-derive of a delayed first chapter from a clean later one; sidecar
+(`.gpx`/`.fit`) UTC alignment; `sourceInPoint` (segment trimming); provider-private
+`setup` → shared resources; perf path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU
+profiles).

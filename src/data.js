@@ -105,7 +105,7 @@ export class DataSet {
   constructor() {
     this.channels = new Map()
     this.timezone = null // a constant tz candidate a data provider may derive (e.g. GPS → tz)
-    this.clock = null // a wall-clock candidate a provider may derive (e.g. GPS → startUtc), §5
+    this.clocks = new Map() // sourceIndex → wall-clock candidate { startUtc, confidence } (e.g. GPS), §5
   }
 
   addChannel(name, unit, samples, maxGap) {
@@ -135,8 +135,14 @@ export class DataSet {
       const result = await provider.data({ sources, config })
       // a provider may report a constant timezone (e.g. derived from GPS); first wins
       if (set.timezone == null && result?.timezone) set.timezone = result.timezone
-      // …and a wall-clock candidate (e.g. GPS startUtc); first wins, engine adjudicates (§5)
-      if (set.clock == null && result?.clock) set.clock = result.clock
+      // …and per-segment wall-clock candidates (e.g. GPS startUtc), keyed by source
+      // index; first provider to claim a segment wins, the engine adjudicates (§5).
+      // A singular `clock` is accepted as the N=1 shorthand (sourceIndex 0).
+      const candidates = result?.clocks ?? (result?.clock ? [{ sourceIndex: 0, ...result.clock }] : [])
+      for (const c of candidates) {
+        const i = c?.sourceIndex ?? 0
+        if (c && !set.clocks.has(i)) set.clocks.set(i, { startUtc: c.startUtc, confidence: c.confidence ?? 'gps' })
+      }
       const channels = result?.channels ?? {}
       for (const [name, ch] of Object.entries(channels)) {
         const preferred = merge[name]

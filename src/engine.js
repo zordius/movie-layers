@@ -156,6 +156,82 @@ export class Engine {
     this.baseVideos = specs.filter((s) => s.file).map((s) => s.file)
   }
 
+  /**
+   * Adjudicate each segment's wall-clock anchor from the candidates (spec §5),
+   * mutating `this.segments` in place. `sources[i]` ↔ `segments[i]`, so a
+   * provider's `clocks` entry keyed by `sourceIndex` maps straight to a segment.
+   *
+   *  1) pick per segment: `explicit > GPS > creation_time (meta) > none`
+   *     (explicit config set in `_resolve` is never overridden);
+   *  2) continue-time: a weak (meta/none) segment inherits the nearest reliable
+   *     (explicit/gps) neighbour's anchor via cumulative duration, marked
+   *     `continued` so it is NOT treated as an independent reading;
+   *  3) gap detection: between two INDEPENDENT reliable anchors whose Δstart
+   *     disagrees with Δcumulative-duration beyond a tolerance, flag `gap` — a real
+   *     world break where the wall clock legitimately jumps (playback never does).
+   */
+  _resolveClocks(dataset) {
+    const segs = this.segments
+    const RANK = { explicit: 4, gps: 3, continued: 2, meta: 1, none: 0 }
+
+    // cumulative playback offsets (seconds): segment i begins after prior durations
+    const offset = []
+    let acc = 0
+    for (let i = 0; i < segs.length; i++) {
+      offset[i] = acc
+      acc += segs[i].durationSec
+    }
+
+    // 1) a GPS candidate upgrades a non-explicit segment over creation_time/none
+    for (let i = 0; i < segs.length; i++) {
+      const cand = dataset.clocks.get(i)
+      if (
+        cand &&
+        cand.startUtc != null &&
+        segs[i].clockSource !== 'explicit' &&
+        RANK[cand.confidence] > RANK[segs[i].clockSource]
+      ) {
+        segs[i].startUtc = cand.startUtc
+        segs[i].clockSource = cand.confidence // 'gps'
+      }
+    }
+
+    const reliable = (i) => segs[i].clockSource === 'explicit' || segs[i].clockSource === 'gps'
+
+    // 2) continue-time: fill weak segments from the nearest reliable neighbour
+    for (let i = 0; i < segs.length; i++) {
+      if (reliable(i)) continue
+      let src = -1
+      let best = Infinity
+      for (let j = 0; j < segs.length; j++) {
+        if (!reliable(j) || segs[j].startUtc == null) continue
+        const d = Math.abs(j - i)
+        if (d < best) {
+          best = d
+          src = j
+        }
+      }
+      if (src >= 0) {
+        segs[i].startUtc = segs[src].startUtc + (offset[i] - offset[src]) * 1000
+        segs[i].clockSource = 'continued'
+      }
+    }
+
+    // 3) gap detection between consecutive INDEPENDENT (original gps/explicit) anchors
+    const TOL_MS = 1000
+    let prev = -1
+    for (let i = 0; i < segs.length; i++) {
+      segs[i].gap = false
+      if (!reliable(i) || segs[i].startUtc == null) continue
+      if (prev >= 0) {
+        const expected = (offset[i] - offset[prev]) * 1000
+        const actual = segs[i].startUtc - segs[prev].startUtc
+        if (Math.abs(actual - expected) > TOL_MS) segs[i].gap = true
+      }
+      prev = i
+    }
+  }
+
   async render() {
     await this._resolve()
 
@@ -173,20 +249,10 @@ export class Engine {
     // timezone precedence: explicit Engine config > provider-derived (e.g. GPS) > default
     this.timezone = this._timezone ?? dataset.timezone ?? null
 
-    // GPS clock upgrade (spec §5): a data provider may derive a wall-clock anchor
-    // (e.g. GPS first-fix UTC) that outranks the container creation_time. Apply it
-    // here — after data load, before the ffmpeg anchor + Timeline snapshot read
-    // segment.startUtc — but never over an explicit config anchor. Single-video
-    // scope: the provider clock maps to the lone segment. Per-segment resolution +
-    // continue-time + gap detection for multi-video is the next step (§5).
-    if (
-      this.segments.length === 1 &&
-      dataset.clock &&
-      this.segments[0].clockSource !== 'explicit'
-    ) {
-      this.segments[0].startUtc = dataset.clock.startUtc
-      this.segments[0].clockSource = dataset.clock.confidence ?? 'gps'
-    }
+    // Clock resolution (spec §5): fold the providers' per-segment GPS candidates
+    // into each segment's anchor — done here, after data load and before the
+    // ffmpeg anchor + Timeline snapshot read segment.startUtc.
+    this._resolveClocks(dataset)
 
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {
