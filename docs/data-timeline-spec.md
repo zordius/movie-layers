@@ -181,10 +181,13 @@ the **structural** part (explicit `startUtc` else the segment's `creation_time`)
 **per-segment GPS** — a provider reports `clocks: [{ sourceIndex, startUtc,
 confidence:'gps' }]` and the engine upgrades each non-explicit segment over
 `creation_time`; **continue-time** — a weak segment inherits the nearest reliable
-neighbour's anchor via cumulative duration (marked `continued`); **gap
-detection** — two *independent* reliable anchors disagreeing with cumulative
-duration flag a `gap`; and the **regression-verified true start** (below).
-`frame.segment` now carries `confidence` + `gap`.
+neighbour's anchor via cumulative duration (marked `continued`); **back-derive** —
+an *unverified*-GPS segment (delayed first fix) contiguous with a trusted
+(explicit/verified-GPS) anchor inherits its clock, recovering the lock delay (with
+a plausible-delay contiguity guard); **gap detection** — two *independent* reliable
+anchors disagreeing with cumulative duration flag a `gap`; and the
+**regression-verified true start** (below). `frame.segment` now carries
+`confidence` + `gap`.
 
 ### Precedence (per segment)
 ```
@@ -201,8 +204,9 @@ GPS (verified)  >  container creation_time  >  file mtime (untrusted)  >  none
   extrapolated true start with `verified:true`, else falls back to first-fix.
   `provider-gopro` anchors each segment on that — so a verified segment's first fix
   lands `lockDelay` into playback (pre-display gray before lock, as intended), and
-  the engine still gets a per-segment `clocks` candidate. Optional future tweak:
-  back-derive a delayed first chapter from a clean later one via continue-time.*
+  the engine still gets a per-segment `clocks` candidate (with `verified`). An
+  *unverified* segment (e.g. a short or lock-late chapter 1) contiguous with a
+  verified later chapter is then **back-derived** to its true start (engine step 2).*
 - **creation_time** — from the engine's probe. Camera clock; may be wrong.
 - **mtime** — often the copy/move time, not the recording time → **treat as
   untrusted**; prefer `dateTime = null` over showing a wrong date.
@@ -294,12 +298,12 @@ channel-merge precedence; timezone resolution (explicit > provider > default);
 `provider-svg`; `provider-gopro` (gps/speed/altitude + derived gradient channels,
 GPS→tz timezone, per-segment GPS `clocks` candidates — adapts `gpx-from-gopro`,
 multi-source offset-merge); **clock resolution** — per-segment pick (explicit >
-GPS > creation_time) + continue-time fill + gap detection, `frame.segment.{confidence,gap}`;
+GPS > creation_time) + continue-time fill + back-derive (unverified-GPS chapter from
+a verified neighbour) + gap detection, `frame.segment.{confidence,gap}`;
 **regression-verified true start** (`gpx-from-gopro` regresses UTC vs media-offset
 `cts`, slope ≈ 1 gate; provider anchors on the verified start, restoring pre-display gray).
 
-🔜 Planned: optional back-derive of a delayed first chapter from a clean later one
-(via continue-time); sidecar (`.gpx`/`.fit`) UTC alignment; `sourceInPoint`
+🔜 Planned: sidecar (`.gpx`/`.fit`) UTC alignment; `sourceInPoint`
 (segment trimming); provider-private `setup` → shared resources; perf path
 (`toBuffer('raw')`/bgra, DoubleBuffer, GPU
 profiles).

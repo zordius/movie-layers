@@ -141,7 +141,13 @@ export class DataSet {
       const candidates = result?.clocks ?? (result?.clock ? [{ sourceIndex: 0, ...result.clock }] : [])
       for (const c of candidates) {
         const i = c?.sourceIndex ?? 0
-        if (c && !set.clocks.has(i)) set.clocks.set(i, { startUtc: c.startUtc, confidence: c.confidence ?? 'gps' })
+        if (c && !set.clocks.has(i)) {
+          set.clocks.set(i, {
+            startUtc: c.startUtc,
+            confidence: c.confidence ?? 'gps',
+            verified: c.verified === true,
+          })
+        }
       }
       const channels = result?.channels ?? {}
       for (const [name, ch] of Object.entries(channels)) {

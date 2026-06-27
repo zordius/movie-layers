@@ -163,10 +163,14 @@ export class Engine {
    *
    *  1) pick per segment: `explicit > GPS > creation_time (meta) > none`
    *     (explicit config set in `_resolve` is never overridden);
-   *  2) continue-time: a weak (meta/none) segment inherits the nearest reliable
+   *  2) back-derive: an *unverified*-GPS segment (its first fix is delayed by GPS
+   *     lock — e.g. a GoPro chapter 1) that is contiguous with a trusted anchor
+   *     (explicit / verified-GPS) inherits that anchor's clock via cumulative
+   *     duration, recovering the true start the delay hid;
+   *  3) continue-time: a weak (meta/none) segment inherits the nearest reliable
    *     (explicit/gps) neighbour's anchor via cumulative duration, marked
    *     `continued` so it is NOT treated as an independent reading;
-   *  3) gap detection: between two INDEPENDENT reliable anchors whose Δstart
+   *  4) gap detection: between two INDEPENDENT reliable anchors whose Δstart
    *     disagrees with Δcumulative-duration beyond a tolerance, flag `gap` — a real
    *     world break where the wall clock legitimately jumps (playback never does).
    */
@@ -184,6 +188,7 @@ export class Engine {
 
     // 1) a GPS candidate upgrades a non-explicit segment over creation_time/none
     for (let i = 0; i < segs.length; i++) {
+      segs[i].verified = false
       const cand = dataset.clocks.get(i)
       if (
         cand &&
@@ -193,12 +198,45 @@ export class Engine {
       ) {
         segs[i].startUtc = cand.startUtc
         segs[i].clockSource = cand.confidence // 'gps'
+        segs[i].verified = cand.verified === true
+      }
+    }
+
+    // 2) back-derive: an unverified-GPS segment whose first fix is delayed by GPS
+    // lock acquisition, but which is contiguous with a trusted anchor (explicit or
+    // verified-GPS), inherits that anchor's clock via cumulative duration. Guard
+    // contiguity by requiring the implied lock delay (first-fix − back-derived
+    // start) to be plausible: a small negative tolerance for jitter up to a
+    // cold-start TTFF ceiling. A larger mismatch ⇒ a real break (separate
+    // recording), so keep the segment's own first fix.
+    const trusted = (i) =>
+      segs[i].clockSource === 'explicit' || (segs[i].clockSource === 'gps' && segs[i].verified)
+    const MAX_LOCK_DELAY_MS = 180000 // 3-minute cold-start time-to-first-fix ceiling
+    const NEG_TOL_MS = 2000
+    for (let i = 0; i < segs.length; i++) {
+      if (!(segs[i].clockSource === 'gps' && !segs[i].verified) || segs[i].startUtc == null) continue
+      let src = -1
+      let best = Infinity
+      for (let j = 0; j < segs.length; j++) {
+        if (!trusted(j) || segs[j].startUtc == null) continue
+        const d = Math.abs(j - i)
+        if (d < best) {
+          best = d
+          src = j
+        }
+      }
+      if (src < 0) continue
+      const derived = segs[src].startUtc + (offset[i] - offset[src]) * 1000
+      const lockDelay = segs[i].startUtc - derived
+      if (lockDelay >= -NEG_TOL_MS && lockDelay <= MAX_LOCK_DELAY_MS) {
+        segs[i].startUtc = derived
+        segs[i].clockSource = 'continued' // derived from a trusted neighbour, no longer independent
       }
     }
 
     const reliable = (i) => segs[i].clockSource === 'explicit' || segs[i].clockSource === 'gps'
 
-    // 2) continue-time: fill weak segments from the nearest reliable neighbour
+    // 3) continue-time: fill weak segments from the nearest reliable neighbour
     for (let i = 0; i < segs.length; i++) {
       if (reliable(i)) continue
       let src = -1
@@ -217,7 +255,7 @@ export class Engine {
       }
     }
 
-    // 3) gap detection between consecutive INDEPENDENT (original gps/explicit) anchors
+    // 4) gap detection between consecutive INDEPENDENT (original gps/explicit) anchors
     const TOL_MS = 1000
     let prev = -1
     for (let i = 0; i < segs.length; i++) {
