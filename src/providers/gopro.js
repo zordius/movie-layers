@@ -1,5 +1,5 @@
 /**
- * provider-gopro — the adapter that bridges gpx-stabilizer's neutral telemetry
+ * provider-gopro — the adapter that bridges gpx-from-gopro's neutral telemetry
  * export (see its docs/export-contract.md) into movie-layers data channels.
  *
  * Telemetry parsing lives here (in the provider), NOT in movie-layers core: the
@@ -19,12 +19,9 @@
  * `gopro()` reads telemetry from the same file as the base video by default; pass
  * `gopro({ file })` to read from a different source.
  */
-// NOTE: gpx-stabilizer is mid-monorepo-split (its docs/monorepo-split.md). The
-// telemetry surface (readGoproTelemetry et al.) moves OUT of core into the
-// `gpx-from-gopro` package. Once that split lands, change this import — and the
-// movie-layers dependency — from 'gpx-stabilizer' to 'gpx-from-gopro' (core
-// becomes zero-dep and won't export telemetry).
-import { readGoproTelemetry } from 'gpx-stabilizer'
+// Telemetry extraction lives in the standalone `gpx-from-gopro` package (split out
+// of `gpx-stabilizer` core, which is now zero-dep); see its docs/export-contract.md.
+import { readGoproTelemetry } from 'gpx-from-gopro'
 
 /** Great-circle horizontal distance between two lat/lon points, in metres. */
 function haversineM(a, b) {

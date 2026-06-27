@@ -35,6 +35,6 @@
   "license": "GPL-3.0-or-later",
   "dependencies": {
     "@napi-rs/canvas": "^0.1.0",
-    "gpx-stabilizer": "file:../gpx-stabilizer"
+    "gpx-from-gopro": "file:../gpx-stabilizer/packages/gopro"
   }
 }
