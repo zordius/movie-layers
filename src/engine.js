@@ -138,13 +138,18 @@ export class Engine {
       if (durationSec == null) {
         throw new Error(`segment ${i} needs a \`durationSec\` or a probeable \`file\``)
       }
-      const startUtc = toEpochMs(s.startUtc) ?? infos[i]?.creationTime ?? null
+      // clock candidates (spec §5): explicit config > container creation_time. A
+      // GPS candidate from a data provider can outrank `meta` later (render()),
+      // but never an explicit anchor. `clockSource` records which we used.
+      const explicitUtc = toEpochMs(s.startUtc)
+      const startUtc = explicitUtc ?? infos[i]?.creationTime ?? null
+      const clockSource = explicitUtc != null ? 'explicit' : infos[i]?.creationTime != null ? 'meta' : 'none'
       if (this.sources[i]) {
         this.sources[i].offset = offset
         this.sources[i].startUtc = startUtc
       }
       offset += durationSec
-      return { durationSec, startUtc }
+      return { durationSec, startUtc, clockSource }
     })
 
     // base video file list for ffmpeg (concat when >1)
@@ -167,6 +172,21 @@ export class Engine {
 
     // timezone precedence: explicit Engine config > provider-derived (e.g. GPS) > default
     this.timezone = this._timezone ?? dataset.timezone ?? null
+
+    // GPS clock upgrade (spec §5): a data provider may derive a wall-clock anchor
+    // (e.g. GPS first-fix UTC) that outranks the container creation_time. Apply it
+    // here — after data load, before the ffmpeg anchor + Timeline snapshot read
+    // segment.startUtc — but never over an explicit config anchor. Single-video
+    // scope: the provider clock maps to the lone segment. Per-segment resolution +
+    // continue-time + gap detection for multi-video is the next step (§5).
+    if (
+      this.segments.length === 1 &&
+      dataset.clock &&
+      this.segments[0].clockSource !== 'explicit'
+    ) {
+      this.segments[0].startUtc = dataset.clock.startUtc
+      this.segments[0].clockSource = dataset.clock.confidence ?? 'gps'
+    }
 
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {

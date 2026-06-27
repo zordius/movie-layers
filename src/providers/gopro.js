@@ -67,17 +67,10 @@ export default function gopro(opts = {}) {
         )
       }
 
-      const { points, timezone, startUtc } = await readGoproTelemetry(path, {
+      const { points, timezone } = await readGoproTelemetry(path, {
         ...(opts.rate != null ? { rate: opts.rate } : {}),
         ...(opts.stabilize != null ? { stabilize: opts.stabilize } : {}),
       })
-
-      // Zero the channel clock to this segment's wall-clock anchor so channel `t`
-      // lines up with the engine's playback `timeSec` (0 at video start). The
-      // segment anchor is creation_time today; once the GPS clock-resolution lands
-      // (spec §5 / item h) it becomes the GPS start, and this alignment sharpens
-      // automatically. Fallbacks keep a telemetry-only (no base video) run working.
-      const src = sources.find((s) => s && s.file === path) ?? sources[0] ?? null
 
       // raw points carry `fix`; stabilized points don't (stabilize reduces a point
       // to {lat,lon,ele,time}). Filter to a usable lock when we still have `fix`;
@@ -95,7 +88,14 @@ export default function gopro(opts = {}) {
         return { channels: {}, timezone: timezone ?? null }
       }
 
-      const ref = src?.startUtc ?? startUtc ?? good[0].time
+      // Anchor BOTH the channel clock and the wall-clock candidate to the first
+      // usable GPS fix (good[0]). Zeroing channels here — rather than to the
+      // container creation_time — keeps GPS alignment self-consistent and
+      // independent of a possibly-wrong creation_time, and shares one anchor with
+      // the `clock` candidate below, so dateTime and the samples never drift apart.
+      // NOTE (step 1): this treats first-fix as video start, ignoring any pre-lock
+      // delay; the regression-verified true-start refinement is step 2 (spec §5).
+      const ref = good[0].time
       const ts = good.map((p) => (p.time - ref) / 1000)
 
       const maxGap = opts.maxGap ?? 3
@@ -140,10 +140,14 @@ export default function gopro(opts = {}) {
       if (altitude.samples.length) channels.altitude = altitude
       if (gradient.samples.length) channels.gradient = gradient
 
-      // timezone flows up to the engine (DataSet captures the first provider tz);
-      // startUtc is returned for the forthcoming GPS clock resolution (item h) —
-      // the engine ignores unknown fields today.
-      return { channels, timezone: timezone ?? null, startUtc }
+      // timezone + GPS wall-clock candidate flow up to the engine; DataSet captures
+      // the first provider's tz and clock, and the engine adjudicates per spec §5
+      // (GPS > creation_time, explicit config still wins).
+      return {
+        channels,
+        timezone: timezone ?? null,
+        clock: { startUtc: ref, confidence: 'gps' },
+      }
     },
   }
 }

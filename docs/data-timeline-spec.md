@@ -40,9 +40,10 @@ defineProvider({
 - **Pure layer pack** = `{ name, layers }` (e.g. `provider-svg`). ✅
 - **Pure data pack** = `{ name, data }` (e.g. a GPX reader). ✅ (via
   `defineDataProvider` today)
-- **Both** = `{ name, data, layers }` (e.g. `provider-gopro`: telemetry channels
-  + dashboard widgets shipped together). ✅ (shape demonstrated in the example;
-  `provider-gopro` itself pends `telemetry-core`)
+- **Both** = `{ name, data, layers }` (one pack shipping telemetry channels +
+  widgets together). ✅ shape supported. Today `provider-gopro` is **data-only**
+  (gps/speed/altitude/gradient channels, adapting `gpx-stabilizer`) and pairs with
+  the separate `dashboard` layer pack; folding the widgets in is optional.
 
 Engine consumes a single `providers: [...]` array and routes by facet. ✅
 (`dataProviders` kept as a back-compat alias.)
@@ -172,12 +173,14 @@ global timeline is 🔜 (no embedded provider exists yet); sidecar UTC alignment
 
 ---
 
-## 5. Clock resolution (engine) — structural ✅, GPS/continue/gap 🔜
+## 5. Clock resolution (engine) — structural + single-video GPS ✅; continue-time / gap / multi-segment 🔜
 
-Each segment's `startUtc` is resolved by the engine from candidate anchors. The
-**structural** part is done: explicit `startUtc` else the segment's
-`creation_time`. The GPS-candidate / continue-time / gap / confidence machinery
-below is 🔜 (needs `provider-gopro`).
+Each segment's `startUtc` is resolved by the engine from candidate anchors. Done:
+the **structural** part (explicit `startUtc` else the segment's `creation_time`),
+**plus the single-video GPS candidate** — a data provider's `clock` upgrades the
+lone segment's anchor over `creation_time` (an explicit config anchor still wins).
+The continue-time / gap / per-segment (N>1) resolution and the regression-verified
+GPS gate below are 🔜.
 
 ### Precedence (per segment)
 ```
@@ -189,6 +192,11 @@ GPS (verified)  >  container creation_time  >  file mtime (untrusted)  >  none
   `clock: { startUtc, confidence:'gps', verified }`. "GPS" means **first good fix**
   (3D, low DOP, valid GPSU); robustness via **linear regression of UTC vs
   media-offset, slope ≈ 1**. Fails the quality gate → fall through.
+  *Status: `provider-gopro` reports `clock:{ startUtc, confidence:'gps' }` from the
+  first usable fix and the engine applies it (single-video) ✅; the regression
+  `verified` gate (which needs the per-sample media offset, not pulled by today's
+  `timeIn:'GPS'` extract) is 🔜 — so step 1 treats first-fix as video start,
+  ignoring pre-lock delay.*
 - **creation_time** — from the engine's probe. Camera clock; may be wrong.
 - **mtime** — often the copy/move time, not the recording time → **treat as
   untrusted**; prefer `dateTime = null` over showing a wrong date.
@@ -277,11 +285,12 @@ shared cached `Source`; `probeVideo` + base-video config resolution; segment-bas
 two-clock `Timeline`; multi-video concat (per-segment probe, cumulative offsets,
 per-segment `creation_time` anchors, concat list builder, dimension guard);
 channel-merge precedence; timezone resolution (explicit > provider > default);
-`provider-svg`.
+`provider-svg`; `provider-gopro` (gps/speed/altitude + derived gradient channels,
+GPS→tz timezone, GPS `clock` candidate — adapts `gpx-stabilizer`); **single-video
+GPS clock upgrade** (explicit > GPS > creation_time).
 
-🔜 Planned: clock resolution GPS half (GPS candidate → continue-time → gap →
-confidence); provider GPS→tz derivation (external lib); embedded-provider data
-offset-merge; sidecar UTC alignment;
+🔜 Planned: clock resolution multi-segment half (per-segment GPS candidate →
+continue-time → gap → confidence) + the regression-`verified` GPS gate;
+embedded-provider multi-source data offset-merge; sidecar UTC alignment;
 `sourceInPoint` (segment trimming); provider-private `setup` → shared resources;
-perf path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU profiles); `provider-gopro`
-(needs `telemetry-core`).
+perf path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU profiles).
