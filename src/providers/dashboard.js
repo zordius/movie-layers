@@ -123,15 +123,105 @@ class Latlon extends Layer {
     super()
     this.x = c.x ?? 40
     this.y = c.y ?? 150
+    this.windowSec = c.windowSec ?? 10 // ± seconds of travel visible in the moving window
+    this._scale = undefined
   }
+
+  // Fixed span, computed once: show ~windowSec of travel at the movie's typical
+  // speed → consistent line density and a zoom that never changes (only pans).
+  _ensureScale(series, R) {
+    if (this._scale !== undefined) return
+    const pts = series.filter((s) => s.value && s.value.lat != null)
+    if (pts.length < 2) {
+      this._scale = null
+      return
+    }
+    const kx = Math.cos((pts[pts.length >> 1].value.lat * Math.PI) / 180)
+    const steps = []
+    const dts = []
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1]
+      const b = pts[i]
+      steps.push(Math.hypot((b.value.lon - a.value.lon) * kx, b.value.lat - a.value.lat))
+      dts.push(b.t - a.t)
+    }
+    const median = (arr) => [...arr].sort((p, q) => p - q)[arr.length >> 1]
+    const halfSpan = Math.max((median(steps) || 1e-5) * (this.windowSec / (median(dts) || 1)), 2.5e-4)
+    this._kx = kx
+    this._scale = R / halfSpan
+  }
+
   draw(ctx, f) {
     const { x, y } = this
     const w = 276
     const h = H
     panel(ctx, x, y, w, h)
-    crosshairIcon(ctx, x + 32, y + h / 2, 13, ACCENT)
+
     const sg = f.data.sample('gps')
     const g = sg.value ?? { lat: 0, lon: 0 }
+    const cx = x + 34
+    const cy = y + h / 2
+    const R = 26
+    const series = f.data.series('gps') ?? []
+    this._ensureScale(series, R)
+
+    if (sg.valid && this._scale) {
+      const scale = this._scale
+      const kx = this._kx
+      const px = (p) => cx + (p.lon - g.lon) * kx * scale
+      const py = (p) => cy - (p.lat - g.lat) * scale
+
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(cx, cy, R, 0, Math.PI * 2)
+      ctx.clip()
+      ctx.lineJoin = 'round'
+      ctx.lineCap = 'round'
+      ctx.lineWidth = 3
+
+      // whole track — not-yet-travelled = gray
+      ctx.strokeStyle = GRAY
+      ctx.beginPath()
+      let on = false
+      for (const s of series) {
+        if (!s.value || s.value.lat == null) continue
+        on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
+      }
+      ctx.stroke()
+
+      // travelled (t ≤ now) = green, joined to the current centre
+      ctx.strokeStyle = ACCENT
+      ctx.beginPath()
+      on = false
+      for (const s of series) {
+        if (!s.value || s.value.lat == null) continue
+        if (s.t > f.timeSec) break
+        on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
+      }
+      if (on) ctx.lineTo(cx, cy)
+      ctx.stroke()
+      ctx.restore()
+
+      // reticle: outer ring + ticks + centre dot
+      ctx.strokeStyle = ACCENT
+      ctx.lineWidth = 2.5
+      ctx.beginPath()
+      ctx.arc(cx, cy, R, 0, Math.PI * 2)
+      ctx.stroke()
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        ctx.beginPath()
+        ctx.moveTo(cx + dx * R, cy + dy * R)
+        ctx.lineTo(cx + dx * (R - 5), cy + dy * (R - 5))
+        ctx.stroke()
+      }
+      ctx.fillStyle = ACCENT
+      ctx.beginPath()
+      ctx.arc(cx, cy, 5, 0, Math.PI * 2)
+      ctx.fill()
+    } else {
+      crosshairIcon(ctx, cx, cy, 13, sg.valid ? ACCENT : GRAY)
+    }
+
     ctx.font = `600 22px ${MONO}`
     ctx.textBaseline = 'alphabetic'
     coordLine(ctx, dms(g.lat, 'N', 'S', 3), x + 66, y + 34, sg.valid)

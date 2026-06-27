@@ -45,7 +45,7 @@ await new Engine({
   layout: [
     { type: 'track', x: 5, y: 5, width: 170, height: 360 },
     { type: 'speed', x: 5, y: 914 },
-    { type: 'latlon', x: 5, y: 997 },
+    { type: 'latlon', x: 5, y: 997, windowSec: 2 },
     { type: 'altitude', x: 286, y: 997 },
     { type: 'gradient', x: 471, y: 997 },
   ],
