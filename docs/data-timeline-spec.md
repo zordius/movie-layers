@@ -27,8 +27,7 @@ discussion; marks what's implemented (✅) vs planned (🔜).
 
 ## 1. Provider model — one abstraction, two optional facets
 
-A provider is `{ name, data?, layers? }`. At least one facet. (🔜 merge — today
-`defineProvider` = layers only, `defineDataProvider` = data only.)
+A provider is `{ name, data?, layers? }`. At least one facet. ✅
 
 ```js
 defineProvider({
@@ -42,10 +41,11 @@ defineProvider({
 - **Pure data pack** = `{ name, data }` (e.g. a GPX reader). ✅ (via
   `defineDataProvider` today)
 - **Both** = `{ name, data, layers }` (e.g. `provider-gopro`: telemetry channels
-  + dashboard widgets shipped together). 🔜
+  + dashboard widgets shipped together). ✅ (shape demonstrated in the example;
+  `provider-gopro` itself pends `telemetry-core`)
 
-Engine consumes a single `providers: [...]` array and routes by facet. 🔜
-(today: separate `providers` + `dataProviders`.)
+Engine consumes a single `providers: [...]` array and routes by facet. ✅
+(`dataProviders` kept as a back-compat alias.)
 
 There is **no** "embedded provider" vs "sidecar provider" type. The only
 variable is what `load()` reads from — see §3.
@@ -84,8 +84,7 @@ need is unmet. ✅
 
 ## 3. Source model — `load({ sources, config })`
 
-One signature; embedded vs sidecar is just which input `load` uses. 🔜 (today
-`load(config)`, single global config.)
+One signature; embedded vs sidecar is just which input `load` uses. ✅
 
 - **`sources`** — the engine's base-video segments (see §4), each a handle:
   `{ file, offset, duration, startUtc, bytes(streamTag) }`. A provider reading
@@ -102,7 +101,7 @@ Time alignment differs (but both happen up front):
 | in-video | engine `sources` | structural: add segment `offset` |
 | sidecar | own bound file | absolute UTC: match against segment `startUtc` anchors |
 
-**Shared `Source` (🔜).** The base video is probed **once** (cheap, format-
+**Shared `Source` ✅.** The base video is probed **once** (cheap, format-
 agnostic ffprobe) and shared with the engine and every provider; per-stream
 *extraction* (`bytes('gpmd')`) is cached. So "does this video have GPS?" is a
 lookup on the shared probe, not a re-read. Core reads container fields; each
@@ -133,17 +132,21 @@ The engine owns a list of segments. Each segment descriptor:
 
 The video stream itself is handled **only by ffmpeg** (concat demuxer presents N
 files as one logical `[0:v]`; max 1 logical base input; `[0:v][1:v]overlay`). The
-engine never touches video pixels. 🔜 (concat list builder)
+engine never touches video pixels. ✅ (per-segment probe, cumulative offsets,
+per-segment `creation_time` anchors, concat list builder, dimension guard)
 
-**Invocation.** The engine hands each provider the full `sources` list; the
-engine applies each segment's `offset` when merging the provider's samples onto
-the global timeline. Sidecar providers ignore `sources` and align by UTC. 🔜
+**Invocation.** The engine hands each provider the full `sources` list ✅.
+Applying each segment's `offset` when merging a provider's samples onto the
+global timeline is 🔜 (no embedded provider exists yet); sidecar UTC alignment 🔜.
 
 ---
 
-## 5. Clock resolution (engine) 🔜
+## 5. Clock resolution (engine) — structural ✅, GPS/continue/gap 🔜
 
-Each segment's `startUtc` is resolved by the engine from candidate anchors.
+Each segment's `startUtc` is resolved by the engine from candidate anchors. The
+**structural** part is done: explicit `startUtc` else the segment's
+`creation_time`. The GPS-candidate / continue-time / gap / confidence machinery
+below is 🔜 (needs `provider-gopro`).
 
 ### Precedence (per segment)
 ```
@@ -187,11 +190,11 @@ let the best available clock be the reference and anchor the video to it.
 
 ---
 
-## 6. Channel merge (engine) 🔜
+## 6. Channel merge (engine) ✅
 
 Multiple providers may supply the **same** channel (GoPro's own GPS *and* a
-Garmin GPX `gps`). Today `DataSet.addChannel` **throws** on duplicate; replace
-with a precedence policy (mirrors the Python `--gpx-merge OVERWRITE`):
+Garmin GPX `gps`). `DataSet.addChannel` overwrites; `DataSet.load` resolves
+conflicts via `channelMerge` (mirrors the Python `--gpx-merge OVERWRITE`):
 
 ```js
 new Engine({
@@ -219,12 +222,15 @@ new Engine({
 
 ## 8. Status summary
 
-✅ Implemented: data model + interpolated `frame.data`; `needs` validation;
-segment-based two-clock `Timeline`; `probeVideo` + base-video config resolution
-(`explicit > probed`); single-segment `creation_time` anchor.
+✅ Implemented: data model + interpolated `frame.data` + `needs` validation;
+unified provider facets + single `providers` array; `load({sources,config})` +
+shared cached `Source`; `probeVideo` + base-video config resolution; segment-based
+two-clock `Timeline`; multi-video concat (per-segment probe, cumulative offsets,
+per-segment `creation_time` anchors, concat list builder, dimension guard);
+channel-merge precedence; `provider-svg`.
 
-🔜 Planned: unified provider facets + single `providers` array; `load({sources,
-config})` + shared cached `Source`; multi-segment (`segment.file`, per-segment
-probe, source injection, offset merge); clock resolution (GPS candidate →
-precedence → continue-time → gap → confidence); channel-merge precedence; concat
-list builder.
+🔜 Planned: clock resolution GPS half (GPS candidate → continue-time → gap →
+confidence); embedded-provider data offset-merge; sidecar UTC alignment;
+`sourceInPoint` (segment trimming); provider-private `setup` → shared resources;
+perf path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU profiles); `provider-gopro`
+(needs `telemetry-core`).
