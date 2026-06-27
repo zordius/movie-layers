@@ -42,6 +42,8 @@ export class Engine {
     segments = null, // [{ durationSec, startUtc }] for multi-video concat
     startDateTime = null, // single-segment wall-clock anchor (Date | ms | ISO)
     timezone = null, // display tz for dateTime
+    scale = null, // explicit logical→physical scale (overrides scaleBaseline)
+    scaleBaseline = null, // logical baseline height; scale = height / scaleBaseline (e.g. 1080)
     background = null, // css colour to clear with; null = transparent
     baseVideo = null, // single optional base video (always the bottom layer)
     output,
@@ -56,6 +58,8 @@ export class Engine {
     this.inputFps = inputFps ?? fps
     this._timezone = timezone // explicit override (highest precedence); resolved in render()
     this.timezone = timezone
+    this._scale = scale
+    this._scaleBaseline = scaleBaseline
     this.background = background
     this.baseVideo = baseVideo
     this.output = output
@@ -198,6 +202,15 @@ export class Engine {
     const { frameCount, durationSec } = timeline
     const lastIndex = frameCount - 1
 
+    // global scale: the canvas stays physical, but layers draw in a LOGICAL space.
+    // s = explicit, else height/scaleBaseline, else 1. Scale is by HEIGHT, so the
+    // logical height is the baseline and the logical width = baseline × aspect
+    // (uniform → no distortion; widgets author in logical px and anchor to edges).
+    const s = this._scale ?? (this._scaleBaseline ? this.height / this._scaleBaseline : 1)
+    const logicalW = this.width / s
+    const logicalH = this.height / s
+    this.scale = s
+
     try {
       for (const { index, timeSec, segment } of timeline.steps()) {
         ctx.clearRect(0, 0, this.width, this.height)
@@ -227,13 +240,17 @@ export class Engine {
           segment,
           dateTime,
           timezone: this.timezone,
-          // data + geometry
+          // data + geometry (logical space — see scale below)
           data,
-          width: this.width,
-          height: this.height,
+          scale: s,
+          width: logicalW,
+          height: logicalH,
         }
 
+        ctx.save()
+        ctx.scale(s, s)
         for (const { instance } of built) instance.draw(ctx, frame)
+        ctx.restore()
 
         const { data: pixels } = ctx.getImageData(0, 0, this.width, this.height)
         await pipe.writeFrame(Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength))

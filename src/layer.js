@@ -17,8 +17,9 @@
  * @property {Date|null} dateTime  segment.startUtc + localTime (may jump on a gap; null if no anchor)
  * @property {string|null} timezone
  * @property {{get,sample,valid,series,stats,unit,has}} data  time-bound data accessor (interpolated at timeSec)
- * @property {number} width
- * @property {number} height
+ * @property {number} scale   logical→physical scale applied to the layer pass
+ * @property {number} width   logical canvas width (physical / scale); scale by height → baseline × aspect
+ * @property {number} height  logical canvas height (physical / scale) = the baseline
  */
 export class Layer {
   /**
