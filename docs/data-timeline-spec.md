@@ -50,6 +50,36 @@ Engine consumes a single `providers: [...]` array and routes by facet. ✅
 There is **no** "embedded provider" vs "sidecar provider" type. The only
 variable is what `load()` reads from — see §3.
 
+### Object vs factory, and where parameters go
+
+The engine's input is always a **provider object** (`{ name, data?, layers? }`).
+How you obtain it depends on whether the provider needs construction config:
+
+- **Ready-made** (no provider-level config) → the package exports the object;
+  use it directly: `providers: [svg]` (no `()`).
+- **Configurable** (needs e.g. a sidecar file or options) → the package exports a
+  **factory** `(config) => provider`; call it to bind config:
+  `providers: [gpx({ file: 'ride.gpx' })]`.
+
+A factory is just "a function returning a provider object"; whether you write
+`()` reflects whether the provider needs config — a useful signal, not an
+inconsistency.
+
+**Two parameter locations:**
+
+| parameter | where | example |
+|---|---|---|
+| per-layer instance (appearance / behaviour) | the **layout** entry `{ type, ...config }` | `svg`'s `src` / `x` / `y` / `render` |
+| provider-wide (esp. a sidecar data source) | **provider construction** (factory args) | `gpx({ file })` |
+
+So `svg` is ready-made (no provider-level config — its params live per-layer in
+the layout); `gpx` is a factory (binds its sidecar file); an embedded provider
+like `gopro` (reads the engine's base video, no file to bind) is typically
+ready-made too.
+
+**Convention:** export a **factory** iff the provider needs construction config;
+otherwise export the **object**.
+
 ---
 
 ## 2. Data model ✅
