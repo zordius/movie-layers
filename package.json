@@ -10,7 +10,8 @@
     ".": "./src/index.js",
     "./svg": "./src/providers/svg.js",
     "./dashboard": "./src/providers/dashboard.js",
-    "./datetime": "./src/providers/datetime.js"
+    "./datetime": "./src/providers/datetime.js",
+    "./gopro": "./src/providers/gopro.js"
   },
   "scripts": {
     "example": "node examples/basic.js",
@@ -33,6 +34,7 @@
   ],
   "license": "GPL-3.0-or-later",
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.0"
+    "@napi-rs/canvas": "^0.1.0",
+    "gpx-stabilizer": "file:../gpx-stabilizer"
   }
 }
