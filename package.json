@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.js",
     "./svg": "./src/providers/svg.js",
-    "./dashboard": "./src/providers/dashboard.js"
+    "./dashboard": "./src/providers/dashboard.js",
+    "./datetime": "./src/providers/datetime.js"
   },
   "scripts": {
     "example": "node examples/basic.js",

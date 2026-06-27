@@ -5,6 +5,7 @@
 //
 import { Engine, defineProvider } from '../src/index.js'
 import dashboard from '../src/providers/dashboard.js'
+import datetime from '../src/providers/datetime.js'
 
 // synthetic telemetry — one provider, data facet, all five channels
 const sample = defineProvider({
@@ -39,15 +40,18 @@ await new Engine({
   height: 1080,
   fps: 30,
   durationSec: 8,
+  startDateTime: '2026-01-16T13:54:39Z', // wall-clock anchor for the datetime widget
+  timezone: 'UTC',
   background: '#8a9096', // snow-ish stand-in for a base video
   output: 'dashboard-out.mp4',
-  providers: [sample, dashboard],
+  providers: [sample, dashboard, datetime],
   layout: [
     { type: 'track', x: 5, y: 5, width: 170, height: 360 },
     { type: 'speed', x: 5, y: 914 },
     { type: 'latlon', x: 5, y: 997, windowSec: 2 },
     { type: 'altitude', x: 286, y: 997 },
     { type: 'gradient', x: 471, y: 997 },
+    { type: 'datetime' }, // self-anchors bottom-right
   ],
 }).render()
 

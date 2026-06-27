@@ -104,6 +104,7 @@ class Channel {
 export class DataSet {
   constructor() {
     this.channels = new Map()
+    this.timezone = null // a constant tz candidate a data provider may derive (e.g. GPS → tz)
   }
 
   addChannel(name, unit, samples, maxGap) {
@@ -131,6 +132,8 @@ export class DataSet {
     const owner = new Map() // channel name -> provider name currently owning it
     for (const provider of dataProviders) {
       const result = await provider.data({ sources, config })
+      // a provider may report a constant timezone (e.g. derived from GPS); first wins
+      if (set.timezone == null && result?.timezone) set.timezone = result.timezone
       const channels = result?.channels ?? {}
       for (const [name, ch] of Object.entries(channels)) {
         const preferred = merge[name]

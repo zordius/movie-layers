@@ -54,6 +54,7 @@ export class Engine {
   }) {
     this.fps = fps
     this.inputFps = inputFps ?? fps
+    this._timezone = timezone // explicit override (highest precedence); resolved in render()
     this.timezone = timezone
     this.background = background
     this.baseVideo = baseVideo
@@ -159,6 +160,9 @@ export class Engine {
       config: this.dataConfig,
       merge: this.channelMerge,
     })
+
+    // timezone precedence: explicit Engine config > provider-derived (e.g. GPS) > default
+    this.timezone = this._timezone ?? dataset.timezone ?? null
 
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {
