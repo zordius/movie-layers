@@ -35,20 +35,29 @@ function lerp(a, b, f) {
 }
 
 class Channel {
-  constructor(name, unit, samples) {
+  constructor(name, unit, samples, maxGap = Infinity) {
     this.name = name
     this.unit = unit ?? null
+    this.maxGap = maxGap // seconds; a larger inter-sample gap is treated as "no signal"
     // samples: [{ t (seconds), value }], sorted by t
     this.samples = [...samples].sort((p, q) => p.t - q.t)
     this._stats = null
   }
 
-  /** Value at time t (seconds), linearly interpolated; clamped at the ends. */
-  at(t) {
+  /**
+   * { value, valid } at time t. `value` is always usable when samples exist —
+   * clamped before-first / after-last, and held (not interpolated) across a gap
+   * > maxGap — so a widget can pre-display the upcoming value. `valid` is false
+   * before the first sample (e.g. before GPS fix), after the last, and across a
+   * too-large gap, so the widget can render it dimmed/provisional.
+   */
+  sample(t) {
     const s = this.samples
-    if (s.length === 0) return null
-    if (t <= s[0].t) return s[0].value
-    if (t >= s[s.length - 1].t) return s[s.length - 1].value
+    if (s.length === 0) return { value: undefined, valid: false }
+    const first = s[0]
+    const last = s[s.length - 1]
+    if (t <= first.t) return { value: first.value, valid: t === first.t }
+    if (t >= last.t) return { value: last.value, valid: t === last.t }
 
     let lo = 0
     let hi = s.length - 1
@@ -60,7 +69,13 @@ class Channel {
     const a = s[lo]
     const b = s[hi]
     const span = b.t - a.t
-    return lerp(a.value, b.value, span === 0 ? 0 : (t - a.t) / span)
+    if (span > this.maxGap) return { value: a.value, valid: false } // hold across a gap
+    return { value: lerp(a.value, b.value, span === 0 ? 0 : (t - a.t) / span), valid: true }
+  }
+
+  /** Value at time t (clamped/held); see sample() for validity. */
+  at(t) {
+    return this.sample(t).value
   }
 
   series() {
@@ -91,9 +106,9 @@ export class DataSet {
     this.channels = new Map()
   }
 
-  addChannel(name, unit, samples) {
+  addChannel(name, unit, samples, maxGap) {
     // overwrite allowed — conflict precedence is decided in load()
-    this.channels.set(name, new Channel(name, unit, samples))
+    this.channels.set(name, new Channel(name, unit, samples, maxGap))
   }
 
   has(name) {
@@ -122,7 +137,7 @@ export class DataSet {
         const take =
           !owner.has(name) || (preferred !== undefined ? provider.name === preferred : true)
         if (take) {
-          set.addChannel(name, ch.unit, ch.samples ?? [])
+          set.addChannel(name, ch.unit, ch.samples ?? [], ch.maxGap)
           owner.set(name, provider.name)
         }
       }
@@ -141,6 +156,14 @@ export class DataSet {
       get(name) {
         const c = set.channels.get(name)
         return c ? c.at(this._t) : undefined
+      },
+      sample(name) {
+        const c = set.channels.get(name)
+        return c ? c.sample(this._t) : { value: undefined, valid: false }
+      },
+      valid(name) {
+        const c = set.channels.get(name)
+        return c ? c.sample(this._t).valid : false
       },
       series(name) {
         const c = set.channels.get(name)

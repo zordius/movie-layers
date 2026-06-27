@@ -16,7 +16,7 @@
  * @property {{index:number,localIndex:number,localTimeSec:number,startUtc:number|null}} segment
  * @property {Date|null} dateTime  segment.startUtc + localTime (may jump on a gap; null if no anchor)
  * @property {string|null} timezone
- * @property {{get,series,stats,unit,has}} data  time-bound data accessor (interpolated at timeSec)
+ * @property {{get,sample,valid,series,stats,unit,has}} data  time-bound data accessor (interpolated at timeSec)
  * @property {number} width
  * @property {number} height
  */
