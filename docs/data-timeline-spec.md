@@ -89,7 +89,8 @@ otherwise export the **object**.
 ```js
 { channels: { speed: { unit: 'km/h', samples: [{ t, value }] }, ... },
   timeRange?: [t0, t1],
-  clock?: { startUtc, confidence, verified } }   // optional per-source clock evidence, §5
+  clock?: { startUtc, confidence, verified },     // optional per-source clock evidence, §5
+  timezone?: 'Asia/Tokyo' }                        // optional constant tz candidate (e.g. GPS→tz), §5
 ```
 
 - `t` is seconds on the **global playback timeline** (engine applies segment
@@ -218,6 +219,22 @@ let the best available clock be the reference and anchor the video to it.
 > Playback `offset` is independent of all this: it is always known, so rendering
 > never breaks when the wall clock is unknown — only `dateTime` degrades to null.
 
+### Timezone
+
+`frame.timezone` is **config (constant), not a channel** — one IANA tz for the
+render, used only to *display* the absolute `dateTime`. A data provider may
+derive it (e.g. GPS lat/lon → tz, logic owned by an external lib) and report it
+as a constant `timezone` in its `load()` result; the engine adjudicates (provider
+proposes a candidate, engine decides — a fetched value never dictates):
+
+```
+explicit Engine({ timezone })  >  provider-derived (e.g. GPS)  >  default (null → UTC at display)
+```
+
+Resolved once before the loop (provider `load()` runs up front). Per-segment tz
+(cross-timezone travel) is a future extension, mirroring per-segment `startUtc`;
+today it is one global value. ✅ engine resolution · 🔜 GPS→tz derivation (provider).
+
 ---
 
 ## 6. Channel merge (engine) ✅
@@ -241,10 +258,12 @@ new Engine({
 |---|---|
 | parse a source → channels | **provider** |
 | derive GPS clock candidate (back-calc) | **provider** (only it knows the format) |
+| derive timezone (GPS → tz) | **provider** (external lib) |
 | segment list / file paths | **engine** |
 | probe (shared `Source`) / container config | **engine** |
 | apply segment offsets, merge to global timeline | **engine** |
 | clock precedence + continue-time + gap + confidence | **engine** |
+| resolve `frame.timezone` (explicit > provider > default) | **engine** |
 | channel-conflict merge precedence | **engine** |
 | ffmpeg concat + overlay + encode (video pixels) | **ffmpeg** |
 
@@ -257,10 +276,12 @@ unified provider facets + single `providers` array; `load({sources,config})` +
 shared cached `Source`; `probeVideo` + base-video config resolution; segment-based
 two-clock `Timeline`; multi-video concat (per-segment probe, cumulative offsets,
 per-segment `creation_time` anchors, concat list builder, dimension guard);
-channel-merge precedence; `provider-svg`.
+channel-merge precedence; timezone resolution (explicit > provider > default);
+`provider-svg`.
 
 🔜 Planned: clock resolution GPS half (GPS candidate → continue-time → gap →
-confidence); embedded-provider data offset-merge; sidecar UTC alignment;
+confidence); provider GPS→tz derivation (external lib); embedded-provider data
+offset-merge; sidecar UTC alignment;
 `sourceInPoint` (segment trimming); provider-private `setup` → shared resources;
 perf path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU profiles); `provider-gopro`
 (needs `telemetry-core`).
