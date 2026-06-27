@@ -14,14 +14,14 @@ const sample = defineProvider({
     const altitude = []
     const gradient = []
     const gps = []
-    for (let t = 0; t <= 6; t += 0.2) {
+    for (let t = 0; t <= 8; t += 0.2) {
+      // all sensors "acquire" at t≥1.5s — before that, every widget pre-displays
+      // its upcoming first value in gray
+      if (t < 1.5) continue
       speed.push({ t, value: 4 + 28 * (0.5 + 0.5 * Math.sin(t)) })
       altitude.push({ t, value: 1100 + 90 * (0.5 + 0.5 * Math.sin(t / 2)) })
       gradient.push({ t, value: -8 + 16 * (0.5 + 0.5 * Math.sin(t / 1.5)) })
-      // GPS only "fixes" from t≥1.5s — before that, widgets pre-display the
-      // upcoming first value in gray
-      if (t >= 1.5)
-        gps.push({ t, value: { lat: 37.6239 + 0.004 * Math.sin(t * 0.9), lon: 140.0342 + 0.004 * Math.cos(t * 0.7) } })
+      gps.push({ t, value: { lat: 37.6239 + 0.004 * Math.sin(t * 0.9), lon: 140.0342 + 0.004 * Math.cos(t * 0.7) } })
     }
     return {
       channels: {
@@ -38,7 +38,7 @@ await new Engine({
   width: 1920,
   height: 1080,
   fps: 30,
-  durationSec: 6,
+  durationSec: 8,
   background: '#8a9096', // snow-ish stand-in for a base video
   output: 'dashboard-out.mp4',
   providers: [sample, dashboard],
