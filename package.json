@@ -8,11 +8,13 @@
   },
   "exports": {
     ".": "./src/index.js",
-    "./svg": "./src/providers/svg.js"
+    "./svg": "./src/providers/svg.js",
+    "./dashboard": "./src/providers/dashboard.js"
   },
   "scripts": {
     "example": "node examples/basic.js",
-    "example:svg": "node examples/svg.js"
+    "example:svg": "node examples/svg.js",
+    "example:dashboard": "node examples/dashboard.js"
   },
   "keywords": [
     "video",
