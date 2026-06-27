@@ -92,7 +92,7 @@ export class DataSet {
   }
 
   addChannel(name, unit, samples) {
-    if (this.channels.has(name)) throw new Error(`Duplicate data channel "${name}"`)
+    // overwrite allowed — conflict precedence is decided in load()
     this.channels.set(name, new Channel(name, unit, samples))
   }
 
@@ -104,13 +104,27 @@ export class DataSet {
     return [...this.channels.keys()]
   }
 
-  static async load(dataProviders, { sources = [], config = {} } = {}) {
+  /**
+   * Load + merge channels from all data providers. On a channel-name conflict:
+   *  - `merge[name]` set → only the provider whose `name` matches wins;
+   *  - otherwise → last writer wins.
+   *
+   * (Mirrors gopro-dashboard-overlay's --gpx-merge OVERWRITE.)
+   */
+  static async load(dataProviders, { sources = [], config = {}, merge = {} } = {}) {
     const set = new DataSet()
+    const owner = new Map() // channel name -> provider name currently owning it
     for (const provider of dataProviders) {
       const result = await provider.data({ sources, config })
       const channels = result?.channels ?? {}
       for (const [name, ch] of Object.entries(channels)) {
-        set.addChannel(name, ch.unit, ch.samples ?? [])
+        const preferred = merge[name]
+        const take =
+          !owner.has(name) || (preferred !== undefined ? provider.name === preferred : true)
+        if (take) {
+          set.addChannel(name, ch.unit, ch.samples ?? [])
+          owner.set(name, provider.name)
+        }
       }
     }
     return set

@@ -48,6 +48,7 @@ export class Engine {
     providers = [], // unified providers — each may have a data and/or layers facet
     dataProviders = [], // back-compat alias; merged into `providers`
     dataConfig = {}, // passed to each data facet: data({ sources, config })
+    channelMerge = {}, // { channel: providerName } — precedence on conflict (default: last wins)
     layout = [], // [{ type, ...config }] resolved against providers
     ffmpegOptions = {},
   }) {
@@ -62,6 +63,7 @@ export class Engine {
     this.registry = new Registry(allProviders.filter((p) => p.layers))
     this.dataProviders = allProviders.filter((p) => typeof p.data === 'function')
     this.dataConfig = dataConfig
+    this.channelMerge = channelMerge
     this.layoutSpec = layout
     this.ffmpegOptions = ffmpegOptions
 
@@ -155,6 +157,7 @@ export class Engine {
     const dataset = await DataSet.load(this.dataProviders, {
       sources: this.sources.filter(Boolean),
       config: this.dataConfig,
+      merge: this.channelMerge,
     })
 
     // build layers, then fail fast if a declared data need is unmet
