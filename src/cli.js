@@ -258,7 +258,9 @@ async function main() {
     await engine.render({ scene, onCommand: logCmd })
   } else {
     console.log(`rendering → ${out}  (${summary.frameCount} frames @ ${fps}fps)`)
+    const tty = process.stdout.isTTY
     let pct = -1
+    let shown = -1
     await engine.render({
       scene,
       onCommand: logCmd,
@@ -268,12 +270,16 @@ async function main() {
         pct = p
         const el = (Date.now() - t0) / 1000
         const eta = i > 0 ? (el / i) * (n - i) : 0
-        process.stdout.write(
-          `\r  ${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total    `,
-        )
+        const line = `${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total`
+        if (tty) {
+          process.stdout.write(`\r  ${line}    `) // one updating line in a terminal
+        } else if (p % 10 === 0 && p !== shown) {
+          shown = p // non-TTY (pipe / CI / file): plain lines at 10% steps, no \r garble
+          console.log(`  ${line}`)
+        }
       },
     })
-    process.stdout.write('\n')
+    if (tty) process.stdout.write('\n')
   }
 
   // ── Stage 4: done ────────────────────────────────────────────────────────────
