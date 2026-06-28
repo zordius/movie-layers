@@ -4,8 +4,8 @@ How the dashboard turns telemetry channels into gauge numbers, and how those
 numbers are kept stable. Companion to
 [`data-timeline-spec.md`](data-timeline-spec.md) (the data + timeline layer).
 
-**Status: proposed.** None of the smoothing / derivation below is implemented yet
-— this captures the design converged on in discussion (🔜 throughout).
+**Status: §2 display smoothing is implemented ✅; §3 derived-`speed` and the
+lib-side source reconstruction remain proposed (🔜).**
 
 ---
 
@@ -63,24 +63,28 @@ real range — a gradient swinging −39…+26 % still reaches the extremes, onl
 
 ---
 
-## 2. Display smoothing (dashboard feature)
+## 2. Display smoothing (dashboard feature) ✅
 
-A universal, **presentation-only** smoothing applied by every numeric gauge:
+A **presentation-only** smoothing applied by the numeric **scalar** gauges:
 
 - **What** — the displayed value approaches its data target with a **smoothed rate
   of change** (no frame-to-frame snapping): speed smooths the speed's rate,
-  gradient the gradient's rate, etc. Applies **uniformly to all numeric gauges**.
-- **Display-only** — lives in the widget (a `Layer` holds per-frame state); it
-  **never alters `frame.data` return values** — the underlying channel stays raw.
-- **Config** — a single toggle, **default ON**. (Engine / dashboard option; exact
-  name TBD at implementation.)
+  gradient the gradient's rate, etc. ✅ for `speed` / `altitude` / `gradient`.
+- **Scalar only** — positional gauges (`latlon` / `track`, which read `gps`) are
+  **excluded**: smoothing a coordinate lags the map dot (trades jitter for lag).
+- **Display-only** — lives in the widget (a `Layer` holds per-frame state via
+  `src/smooth.js`'s `Smoother`); it **never alters `frame.data` return values** —
+  the underlying channel stays raw.
+- **Config** — Engine option **`gaugeSmoothing` (default `true`)**, injected into
+  every widget's config; a per-layout `smooth: false` (and `smoothTime`) overrides.
+  The CLI exposes `--no-smooth`.
 - **Interaction with `valid` / freeze** — while a channel reads `valid:false` (gap,
   pre-fix, held across `maxGap`), the gauge **holds (freezes)** and smoothing
-  **pauses**; it resumes only across `valid` transitions — so a frozen value never
-  drifts and a re-acquire doesn't snap.
-- **Filter** — EMA / critically-damped follow / slew-rate limit is an
-  implementation choice; the **contract** is "bounded, smooth rate of change toward
-  the target".
+  **pauses** (velocity zeroed); it resumes across `valid` transitions without a
+  snap — a frozen value never drifts.
+- **Filter** — a **critically-damped follow** (the "SmoothDamp" kernel): the value's
+  *velocity* is smoothed, so it **never overshoots**; one time constant
+  `smoothTime` (default **0.35 s**). First real sample snaps (no sweep from 0).
 
 ---
 
@@ -107,10 +111,12 @@ ground speed** from the position track:
 
 ## 4. Status
 
-🔜 **All proposed, none implemented:**
+✅ **Implemented:** display smoothing (§2) — critically-damped, presentation-only,
+scalar gauges, Engine `gaugeSmoothing` toggle **default-on** (`--no-smooth` /
+per-widget override); `src/smooth.js`.
 
-- display smoothing (§2) — universal, presentation-only, toggle **default-on**;
-- derived-`speed` fallback (§3) — shared helper, triggered only when wholly absent.
+🔜 **Proposed:** derived-`speed` fallback (§3) — shared helper, triggered only when
+the `speed` channel is wholly absent.
 
 Source-axis reconstruction (the upstream this layer sits on, §0) is the
 **gpx-stabilizer** side — its SPEC's *elevation-reconstruction (track smoothing)*

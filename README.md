@@ -83,8 +83,9 @@ The dashboard is authored in a 1080-tall **logical** space and the engine's
 `scaleBaseline` normalizes it, so the gadgets sit at the same relative position at
 any resolution (1080p, 2.7K, 4K) — not just 1080p. The layout is aspect-aware: a
 landscape clip (16:9 / 4:3) gets a bottom row of gauges, a portrait / vertical clip
-stacks them in a left column so nothing overflows. `--help` lists every flag
-(`--stabilize` / `--no-stabilize`, `--no-datetime`, `--baseline`).
+stacks them in a left column so nothing overflows. Gauge values are smoothed by
+default (a critically-damped follow, so needles glide instead of snapping to noisy
+GPS); `--no-smooth` turns it off. `--help` lists every flag.
 
 ## Requirements
 

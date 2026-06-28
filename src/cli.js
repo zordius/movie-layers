@@ -39,6 +39,7 @@ options:
   --stabilize           clean the GPS noise first (gpx-stabilizer); drops the speed gauge
   --no-stabilize        force raw GPS (stabilize default is currently off; see code)
   --no-datetime         omit the date/time readout
+  --no-smooth           disable gauge value smoothing (on by default)
   --baseline N          logical baseline height for gadget scaling (default 1080)
   -h, --help            this help
 
@@ -51,6 +52,7 @@ function parseArgs(argv) {
     const t = argv[i]
     if (t === '-h' || t === '--help') a.help = true
     else if (t === '--no-datetime') a.noDatetime = true
+    else if (t === '--no-smooth') a.noSmooth = true
     else if (t === '--stabilize') a.stabilize = true
     else if (t === '--no-stabilize') a.noStabilize = true
     else if (t.startsWith('--')) a[t.slice(2)] = argv[++i] // flag takes the next token
@@ -146,6 +148,7 @@ async function main() {
     fps,
     scaleBaseline: baseline, // <-- ratio fix: normalize gadget positions to a 1080 logical space
     clockOffsetSec: args['clock-offset'] ? Number(args['clock-offset']) : 0,
+    gaugeSmoothing: !args.noSmooth,
     providers: [dataProvider, dashboard, datetime],
     layout: defaultLayout({ hasSpeed, withDatetime, logicalW }),
     output: out,

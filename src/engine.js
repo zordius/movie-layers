@@ -52,6 +52,7 @@ export class Engine {
     dataProviders = [], // back-compat alias; merged into `providers`
     dataConfig = {}, // passed to each data facet: data({ sources, config })
     channelMerge = {}, // { channel: providerName } — precedence on conflict (default: last wins)
+    gaugeSmoothing = true, // default presentation smoothing for gauge widgets (dashboard-spec §2)
     layout = [], // [{ type, ...config }] resolved against providers
     ffmpegOptions = {},
   }) {
@@ -70,6 +71,7 @@ export class Engine {
     this.dataProviders = allProviders.filter((p) => typeof p.data === 'function')
     this.dataConfig = dataConfig
     this.channelMerge = channelMerge
+    this._gaugeSmoothing = gaugeSmoothing
     this.layoutSpec = layout
     this.ffmpegOptions = ffmpegOptions
 
@@ -317,7 +319,9 @@ export class Engine {
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {
       const reg = this.registry.get(type)
-      return { type, needs: reg.needs, needsClock: reg.needsClock, instance: reg.create(config, ctx) }
+      // inject the global gauge-smoothing default; a per-layout `smooth` still overrides
+      const cfg = { smooth: this._gaugeSmoothing, ...config }
+      return { type, needs: reg.needs, needsClock: reg.needsClock, instance: reg.create(cfg, ctx) }
     })
     // A wall clock exists if any segment resolved a startUtc (explicit / GPS /
     // creation_time). A clock-reading layer (datetime) fails fast when there is

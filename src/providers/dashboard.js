@@ -1,4 +1,17 @@
 import { Layer, defineProvider } from '../layer.js'
+import { Smoother } from '../smooth.js'
+
+/**
+ * Smoothed display value for a numeric gauge — presentation-only (dashboard-spec
+ * §2): glides toward the raw sample with a damped rate of change, holding while
+ * invalid. `w.smooth` off → the raw value, unchanged. Positional gauges (track /
+ * latlon) intentionally do NOT use this (smoothing a coordinate lags the map).
+ */
+function shown(w, sample, dt) {
+  if (!w.smooth) return sample.value
+  w._sm ??= new Smoother({ smoothTime: w.smoothTime })
+  return w._sm.step(sample.value, dt, sample.valid)
+}
 
 // --- style (from sample.png) ---
 const ACCENT = '#83e000' // lime green icons / track dot
@@ -92,6 +105,8 @@ class Speed extends Layer {
     this.x = c.x ?? 40
     this.y = c.y ?? 40
     this.digits = c.digits ?? 3 // value width: 3 = up to 999; set 4 for aircraft
+    this.smooth = c.smooth ?? true // presentation smoothing (dashboard-spec §2), default on
+    this.smoothTime = c.smoothTime ?? 0.35
   }
   draw(ctx, f) {
     const { x, y } = this
@@ -99,7 +114,7 @@ class Speed extends Layer {
     const h = H
     panel(ctx, x, y, w, h)
     const sp = f.data.sample('speed')
-    const spd = sp.value ?? 0
+    const spd = shown(this, sp, f.dt) ?? 0
     const max = f.data.stats('speed')?.max ?? 0
     gaugeIcon(ctx, x + 38, y + 44, 20, ACCENT, max > 0 ? spd / max : 0)
     ctx.textBaseline = 'alphabetic'
@@ -234,6 +249,8 @@ class Altitude extends Layer {
     super()
     this.x = c.x ?? 40
     this.y = c.y ?? 250
+    this.smooth = c.smooth ?? true
+    this.smoothTime = c.smoothTime ?? 0.35
   }
   draw(ctx, f) {
     const { x, y } = this
@@ -241,7 +258,7 @@ class Altitude extends Layer {
     const h = H
     panel(ctx, x, y, w, h)
     const sa = f.data.sample('altitude')
-    const v = sa.value ?? 0
+    const v = shown(this, sa, f.dt) ?? 0
     const unit = f.data.unit('altitude') ?? 'm'
     ctx.textBaseline = 'alphabetic'
     ctx.textAlign = 'center'
@@ -273,6 +290,8 @@ class Gradient extends Layer {
     super()
     this.x = c.x ?? 40
     this.y = c.y ?? 350
+    this.smooth = c.smooth ?? true
+    this.smoothTime = c.smoothTime ?? 0.35
   }
   draw(ctx, f) {
     const { x, y } = this
@@ -281,7 +300,7 @@ class Gradient extends Layer {
     panel(ctx, x, y, w, h)
     slopeIcon(ctx, x + 22, y + 24, 26, ACCENT)
     const sgr = f.data.sample('gradient')
-    const g = sgr.value ?? 0
+    const g = shown(this, sgr, f.dt) ?? 0
     ctx.fillStyle = CYAN
     ctx.font = `600 18px ${FONT}`
     ctx.textBaseline = 'alphabetic'
