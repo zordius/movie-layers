@@ -93,13 +93,14 @@ Done:
       `Source`, dimension guard)
 - [x] Clock resolution: per-segment pick (explicit > GPS > `creation_time`) +
       continue-time fill + back-derive + gap detection; channel-merge precedence;
-      timezone resolution (explicit > provider > default)
+      timezone resolution (explicit > provider > default); `clockOffsetSec`
+      manual fix for a wrong camera clock
 
 Planned:
 
 - [ ] `provider-map`
-- [ ] Sidecar `.fit` UTC alignment (binary FIT decoder — `.gpx` is done); best-clock-wins
-      (sidecar clock overriding a weak video clock); `sourceInPoint` (segment trimming)
+- [ ] Sidecar `.fit` UTC alignment (binary FIT decoder — `.gpx` is done);
+      `sourceInPoint` (segment trimming)
 - [ ] Perf: `toBuffer('raw')` + `bgra` (premultiplied) fast path; DoubleBuffer-style
       writer to overlap draw with the pipe write; GPU ffmpeg profiles (`overlay_cuda`)
 - [ ] Layout loader (declarative document → layers)

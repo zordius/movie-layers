@@ -20,9 +20,13 @@ await new Engine({
   height: 1080,
   fps: 30,
   durationSec: 8,
-  // The sidecar carries absolute UTC; this anchor is what its samples align to.
-  // ride.gpx starts at 13:54:39Z, so sample 1 lands at t=0.
-  startDateTime: '2026-01-16T13:54:39Z',
+  // The sidecar carries absolute UTC; the wall clock here is what its samples
+  // align to. ride.gpx truly starts at 13:54:39Z — but say the CAMERA clock was
+  // 13s fast, so it stamped 13:54:52Z. clockOffsetSec pulls that back 13s so the
+  // sidecar (and the displayed dateTime) line up. Drop both lines and use the
+  // real 13:54:39Z if your camera clock is correct.
+  startDateTime: '2026-01-16T13:54:52Z', // camera clock, 13s fast
+  clockOffsetSec: -13, // fix it: true time = camera − 13s
   timezone: 'UTC',
   background: '#8a9096',
   output: 'gpx-out.mp4',

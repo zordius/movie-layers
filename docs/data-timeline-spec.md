@@ -243,10 +243,29 @@ v3.duration`) → `v3→v4` is seamless. Because `v4`'s anchor is *derived* (not
 independent reading), gap detection does **not** fire — which is the desired
 behaviour.
 
-### Best-clock-wins (sidecar better than video)
-When the video clock is weak (mtime/none) but a sidecar (Garmin GPX) has
-authoritative GPS UTC, do **not** force the sidecar onto the bad video clock —
-let the best available clock be the reference and anchor the video to it.
+### Wrong camera clock → manual `clockOffsetSec` (not auto best-clock-wins)
+When the video clock is wrong (a mis-set camera clock — the common real cause)
+but a sidecar (Garmin GPX) has authoritative GPS UTC, you **cannot** recover the
+correction automatically: unlike in-video GPS (whose samples carry a media
+offset `cts` that ties them to the frames), a **sidecar has no intrinsic link to
+the video frames** — its only bridge to the timeline is a shared, *trustworthy*
+wall clock. If the camera clock is off by an unknown N seconds, both the
+alignment *and* the displayed time inherit that same N-second error, and the GPX
+can't tell you N (it doesn't know when you pressed record). Guessing
+"GPX start = video start" is usually wrong (pre-roll), so we do **not** do it.
+
+What *can* be fixed automatically is the **timezone** — a constant display offset
+independent of the sync error (GPS lat/lon → IANA tz, already done below).
+
+The sync/value error is corrected by the **human**, who knows their camera was
+off: **`clockOffsetSec`** (Engine config) — a signed seconds nudge added to the
+resolved wall-clock anchor (`trueStartUtc = resolvedStartUtc + clockOffsetSec`),
+positive = camera slow / shift later, negative = camera fast / shift earlier. It
+corrects **both** sidecar alignment (it flows into the segment timeline before
+alignment) **and** the displayed `dateTime`, and combines with `startDateTime`
+(nudge the explicit anchor too). A GPS-derived clock, if a provider supplies one,
+supersedes it (and needs no correction). ✅ ·  *(no automatic sidecar
+best-clock-wins — intentionally out of scope, see above)*
 
 > Playback `offset` is independent of all this: it is always known, so rendering
 > never breaks when the wall clock is unknown — only `dateTime` degrades to null.
@@ -297,6 +316,7 @@ new Engine({
 | probe (shared `Source`) / container config | **engine** |
 | apply segment offsets, merge to global timeline | **engine** |
 | clock precedence + continue-time + gap + confidence | **engine** |
+| `clockOffsetSec` — fix a wrong camera clock | **human** supplies, **engine** applies |
 | resolve `frame.timezone` (explicit > provider > default) | **engine** |
 | channel-conflict merge precedence | **engine** |
 | ffmpeg concat + overlay + encode (video pixels) | **ffmpeg** |
@@ -319,10 +339,11 @@ multi-source offset-merge); **clock resolution** — per-segment pick (explicit 
 GPS > creation_time) + continue-time fill + back-derive (unverified-GPS chapter from
 a verified neighbour) + gap detection, `frame.segment.{confidence,gap}`;
 **regression-verified true start** (`gpx-from-gopro` regresses UTC vs media-offset
-`cts`, slope ≈ 1 gate; provider anchors on the verified start, restoring pre-display gray).
+`cts`, slope ≈ 1 gate; provider anchors on the verified start, restoring pre-display gray);
+**manual `clockOffsetSec`** — signed seconds nudge fixing a wrong camera clock,
+correcting both sidecar alignment and displayed `dateTime` (§5).
 
 🔜 Planned: sidecar `.fit` UTC alignment (binary FIT decoder — the `.gpx`
-alignment path is done, §3); best-clock-wins (authoritative sidecar clock
-overriding a weak video clock, §5); `sourceInPoint` (segment trimming);
+alignment path is done, §3); `sourceInPoint` (segment trimming);
 provider-private `setup` → shared resources; perf path (`toBuffer('raw')`/bgra,
 DoubleBuffer, GPU profiles).

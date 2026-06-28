@@ -41,6 +41,7 @@ export class Engine {
     durationSec = null, // single-segment length (ignored when `segments` given)
     segments = null, // [{ durationSec, startUtc }] for multi-video concat
     startDateTime = null, // single-segment wall-clock anchor (Date | ms | ISO)
+    clockOffsetSec = 0, // signed seconds added to the resolved wall clock to fix a wrong camera clock (§5)
     timezone = null, // display tz for dateTime
     scale = null, // explicit logical→physical scale (overrides scaleBaseline)
     scaleBaseline = null, // logical baseline height; scale = height / scaleBaseline (e.g. 1080)
@@ -78,6 +79,7 @@ export class Engine {
     this._durationSec = durationSec
     this._segmentsOpt = segments
     this._startDateTime = startDateTime
+    this._clockOffsetSec = clockOffsetSec
 
     this.width = null
     this.height = null
@@ -142,8 +144,15 @@ export class Engine {
       // GPS candidate from a data provider can outrank `meta` later (render()),
       // but never an explicit anchor. `clockSource` records which we used.
       const explicitUtc = toEpochMs(s.startUtc)
-      const startUtc = explicitUtc ?? infos[i]?.creationTime ?? null
+      let startUtc = explicitUtc ?? infos[i]?.creationTime ?? null
       const clockSource = explicitUtc != null ? 'explicit' : infos[i]?.creationTime != null ? 'meta' : 'none'
+      // Manual clock correction (spec §5): a no-`cts` sidecar (Garmin .gpx) can't
+      // recover an unknown camera-clock offset on its own, so the human supplies
+      // it — a signed seconds nudge added to the resolved wall clock. Corrects BOTH
+      // sidecar alignment (flows into segmentInfos) AND the displayed dateTime.
+      // Combinable with startDateTime (nudges the explicit anchor too). A GPS clock,
+      // if a provider derives one, supersedes this in _resolveClocks and needs no fix.
+      if (startUtc != null && this._clockOffsetSec) startUtc += this._clockOffsetSec * 1000
       if (this.sources[i]) {
         this.sources[i].offset = offset
         this.sources[i].startUtc = startUtc
