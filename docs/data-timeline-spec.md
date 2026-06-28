@@ -251,7 +251,9 @@ explicit Engine({ timezone })  >  provider-derived (e.g. GPS)  >  default (null 
 
 Resolved once before the loop (provider `load()` runs up front). Per-segment tz
 (cross-timezone travel) is a future extension, mirroring per-segment `startUtc`;
-today it is one global value. ✅ engine resolution · 🔜 GPS→tz derivation (provider).
+today it is one global value. ✅ engine resolution + GPS→tz derivation (provider —
+`provider-gopro` surfaces `gpx-from-gopro`'s `timezoneOfPoints`, an offline
+`tz-lookup` lat/lon→IANA mapping) · 🔜 per-segment tz (cross-timezone travel).
 
 ---
 
