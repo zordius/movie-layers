@@ -1,14 +1,20 @@
 #!/usr/bin/env node
-// movie-layers CLI — point it at a video and it renders an overlay.
+// movie-layers CLI — glue clips into one video, with a telemetry overlay when the
+// footage carries it. The floor is "stitch the clips together"; the dashboard is
+// what it adds on top when there's GPS (embedded or a sidecar .gpx).
 //
 //   movie-layers GX065132.MP4                 -> GX065132-overlay.mp4 (GoPro auto-dashboard)
+//   movie-layers ./ride-folder                -> concat every clip in the folder (sorted)
+//   movie-layers a.mp4 b.mp4                   -> concat two clips into one timeline
 //   movie-layers clip.mp4 --gpx ride.gpx      -> overlay from a sidecar .gpx
-//   movie-layers clip.mp4 --out out.mp4 --fps 30 --clock-offset -13 --stabilize --no-datetime
+//   movie-layers plain.mp4                     -> no GPS → just encode/concat (no dashboard)
+//   movie-layers clip.mp4 --snapshot --at 30  -> one preview PNG at 30 s
 //
 // A GoPro clip (embedded `gpmd` GPS) automatically gets the full telemetry
 // dashboard; the layout is authored in a 1080-tall LOGICAL space and the engine's
 // `scaleBaseline` normalizes it, so the gadgets sit correctly at any resolution /
 // aspect ratio (2.7K, 4K, 4:3, …), not just 1080p.
+import { readdirSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,15 +32,15 @@ import datetime from './providers/datetime.js'
 // default becomes on. `--stabilize` / `--no-stabilize` always override explicitly.
 const STABILIZE_READY = false
 
-const USAGE = `movie-layers — render a telemetry overlay onto a video
+const USAGE = `movie-layers — glue clips into one video, with a telemetry overlay
 
 usage:
-  movie-layers <video> [<video> ...] [options]
+  movie-layers <video | dir> [<video | dir> ...] [options]
 
 options:
   --out FILE            output path (default: <first-video>-overlay.mp4 / .png, same dir)
-  --snapshot           render one preview PNG instead of a video
-  --at SEC             snapshot time in seconds (default: the middle of the clip)
+  --snapshot            render one preview PNG instead of a video
+  --at SEC              snapshot time in seconds (default: the middle of the clip)
   --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
   --fps N               output framerate (default 30)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
@@ -45,10 +51,10 @@ options:
   --baseline N          logical baseline height for gadget scaling (default 1080)
   -h, --help            this help
 
-A GoPro clip is detected by its embedded GPS (gpmd) and gets the full dashboard
-(track · speed · latlon · altitude · gradient · datetime) automatically. Pass
-several clips (same resolution / fps — parts of one trip) to concat them into a
-single timeline; their telemetry is offset-merged across the join.`
+Inputs are clips and/or directories (a directory expands to its videos, sorted);
+several inputs concat into one timeline. A GoPro clip (embedded gpmd GPS) gets the
+full dashboard automatically; a sidecar .gpx works via --gpx; a clip with no GPS is
+simply stitched/encoded (no dashboard).`
 
 function parseArgs(argv) {
   const a = { _: [] }
@@ -64,6 +70,31 @@ function parseArgs(argv) {
     else a._.push(t)
   }
   return a
+}
+
+const VIDEO_EXT = new Set(['.mp4', '.mov', '.m4v', '.mkv'])
+
+/** Expand each input: a directory → its video files (sorted by name); a file → itself. */
+export function expandInputs(inputs) {
+  const out = []
+  for (const a of inputs) {
+    let isDir = false
+    try {
+      isDir = statSync(a).isDirectory()
+    } catch {
+      /* missing path — keep it so the probe reports a clear read error */
+    }
+    if (isDir) {
+      const vids = readdirSync(a)
+        .filter((f) => VIDEO_EXT.has(extname(f).toLowerCase()))
+        .sort()
+        .map((f) => join(a, f))
+      out.push(...vids)
+    } else {
+      out.push(a)
+    }
+  }
+  return out
 }
 
 /**
@@ -114,7 +145,12 @@ async function main() {
     process.exit(args.help ? 0 : 1)
   }
 
-  const files = args._ // one or more clips, concatenated in order
+  // inputs → flat clip list (directories expand to their videos)
+  const files = expandInputs(args._)
+  if (files.length === 0) {
+    console.error(`error: no video files found in: ${args._.join(', ')}`)
+    process.exit(1)
+  }
   const input = files[0] // first clip drives naming / probing
   const ext = args.snapshot ? 'png' : 'mp4'
   const out =
@@ -123,62 +159,106 @@ async function main() {
   const baseline = args.baseline ? Number(args.baseline) : 1080
   const withDatetime = !args.noDatetime
 
-  // probe the FIRST clip: GoPro telemetry present? + geometry (for the responsive
-  // layout). Concat requires identical dimensions, so the first is representative.
+  // ── Stage 1: inputs + probe ──────────────────────────────────────────────────
+  // probe the FIRST clip (concat needs equal dimensions, so it's representative)
   const src = new Source(input)
   let hasGps = false
+  let info = null
   let logicalW = baseline * (16 / 9) // fallback aspect if the probe can't size it
   try {
     hasGps = await src.hasStream('gpmd')
-    const info = await src.info()
+    info = await src.info()
     if (info?.width && info?.height) logicalW = baseline * (info.width / info.height)
   } catch (e) {
     console.error(`error: cannot read ${input} — ${e.message}`)
     process.exit(1)
   }
+  const label = files.length > 1 ? `${files.length} clips` : basename(input)
+  const dims = info?.width ? `${info.width}x${info.height}` : '?'
+  console.log(`movie-layers: ${label}, ${dims}${info?.fps ? ` @ ${info.fps.toFixed(2)}fps` : ''}`)
 
-  // choose the data provider: explicit --gpx sidecar > embedded GoPro GPS
-  let dataProvider
-  let hasSpeed = true
+  // choose the data provider: --gpx sidecar > embedded GoPro GPS > none (pass-through)
+  let dataProvider = null
+  const hasSpeed = true
   if (args.gpx) {
     dataProvider = gpx({ file: args.gpx })
+    console.log(`  source: sidecar gpx ${args.gpx}`)
   } else if (hasGps) {
-    // default = STABILIZE_READY (intended on, temporarily off); flags override
     const stabilize = args.stabilize ? true : args.noStabilize ? false : STABILIZE_READY
     dataProvider = gopro(stabilize ? { stabilize: true } : {})
-    // stabilize drops device speed, but provider-gopro now derives it from GPS
-    // (dashboard-spec §3), so the speed gauge stays — no need to omit it.
+    console.log(`  source: embedded GoPro GPS${stabilize ? ' (stabilized)' : ''}`)
   } else {
-    console.error(
-      `error: no embedded GPS in ${input} and no --gpx given — nothing to overlay.\n` +
-        `       pass --gpx FILE for sidecar telemetry, or see --help.`,
-    )
-    process.exit(1)
+    // pass-through: no telemetry → just stitch/encode the footage (datetime if a clock exists)
+    const minimal = withDatetime && info?.creationTime != null ? 'datetime only' : 'no overlay (stitch only)'
+    console.log(`  source: no GPS — telemetry widgets off; ${minimal}`)
   }
+
+  // providers + layout (full dashboard with data; datetime-or-nothing without)
+  const providers = dataProvider ? [dataProvider, dashboard, datetime] : [datetime]
+  const layout = dataProvider
+    ? defaultLayout({ hasSpeed, withDatetime, logicalW })
+    : withDatetime && info?.creationTime != null
+      ? [{ type: 'datetime' }]
+      : []
 
   const engine = new Engine({
     // 1 clip → baseVideo; many → segments (ffmpeg concat over one logical timeline)
     ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
     fps,
-    scaleBaseline: baseline, // <-- ratio fix: normalize gadget positions to a 1080 logical space
+    scaleBaseline: baseline, // ratio fix: normalize gadget positions to a 1080 logical space
     clockOffsetSec: args['clock-offset'] ? Number(args['clock-offset']) : 0,
     gaugeSmoothing: !args.noSmooth,
-    providers: [dataProvider, dashboard, datetime],
-    layout: defaultLayout({ hasSpeed, withDatetime, logicalW }),
+    providers,
+    layout,
     output: out,
   })
 
-  const what = args.gpx ? ` (gpx: ${args.gpx})` : hasGps ? ' (GoPro GPS)' : ''
-  const src_ = files.length > 1 ? `${files.length} clips` : basename(input)
+  // load data once; report what was found
+  const { scene, summary } = await engine.prepare()
+  if (summary.clock?.startUtc != null) {
+    const c = summary.clock
+    console.log(
+      `  clock: ${new Date(c.startUtc).toISOString()} (${c.confidence}${c.verified ? ', verified' : ''})` +
+        `${summary.timezone ? `, tz ${summary.timezone}` : ''}`,
+    )
+  }
+  for (const [name, ch] of Object.entries(summary.channels)) {
+    const range = ch.min != null && ch.max != null ? `  ${ch.min.toFixed(1)}–${ch.max.toFixed(1)} ${ch.unit}` : ''
+    console.log(`  ${name}: ${ch.count} samples${range}`)
+  }
+
+  // ── Stage 2: render plan ─────────────────────────────────────────────────────
+  console.log(`widgets: ${summary.layers.join(' · ') || '(none — stitch only)'}`)
+
+  // ── Stage 3: do it ───────────────────────────────────────────────────────────
   if (args.snapshot) {
     const at = args.at != null ? Number(args.at) : null
-    console.log(`snapshot ${src_} @ ${at != null ? `${at}s` : 'middle'} -> ${out}${what}`)
-    await engine.snapshot({ atSec: at, output: out })
+    console.log(`snapshot @ ${at != null ? `${at}s` : 'middle'} → ${out}`)
+    await engine.snapshot({ atSec: at, output: out, scene })
   } else {
-    console.log(`rendering ${src_} -> ${out}${what}`)
-    await engine.render()
+    console.log(`rendering → ${out}  (${summary.frameCount} frames @ ${fps}fps)`)
+    let pct = -1
+    await engine.render({
+      scene,
+      onProgress: (i, n) => {
+        const p = Math.floor((i / n) * 100)
+        if (p !== pct) {
+          pct = p
+          process.stdout.write(`\r  ${String(p).padStart(3)}%  (${i}/${n})  `)
+        }
+      },
+    })
+    process.stdout.write('\n')
   }
-  console.log(`done: ${out}`)
+
+  // ── Stage 4: done ────────────────────────────────────────────────────────────
+  console.log(`done: ${out}  (${summary.durationSec.toFixed(1)}s, ${dims})`)
+  const c = summary.channels
+  const bits = []
+  if (c.speed?.max != null) bits.push(`speed ≤ ${c.speed.max.toFixed(1)} ${c.speed.unit}`)
+  if (c.altitude?.min != null) bits.push(`alt ${c.altitude.min.toFixed(0)}–${c.altitude.max.toFixed(0)} ${c.altitude.unit}`)
+  if (c.gradient?.min != null) bits.push(`grade ${c.gradient.min.toFixed(0)}–${c.gradient.max.toFixed(0)} ${c.gradient.unit}`)
+  if (bits.length) console.log(`  ${bits.join(', ')}`)
 }
 
 // run only as the CLI entry, so the module can be imported (e.g. for tests)

@@ -359,7 +359,50 @@ export class Engine {
     // logical height is the baseline and the logical width = baseline × aspect.
     const s = this._scale ?? (this._scaleBaseline ? this.height / this._scaleBaseline : 1)
     this.scale = s
-    return { canvas, ctx, built, data: dataset.view(), timeline, s, logicalW: this.width / s, logicalH: this.height / s }
+    return {
+      canvas,
+      ctx,
+      built,
+      data: dataset.view(),
+      channelNames: dataset.list(),
+      timeline,
+      s,
+      logicalW: this.width / s,
+      logicalH: this.height / s,
+    }
+  }
+
+  /**
+   * Run the scene setup once and return it alongside a plain-data `summary` (geometry,
+   * clock, timezone, per-channel sample counts + ranges, widget list) for a caller to
+   * log. Pass the returned `scene` to render()/snapshot() to avoid re-loading data.
+   */
+  async prepare() {
+    const scene = await this._scene()
+    const seg0 = this.segments[0]
+    const channels = {}
+    for (const name of scene.channelNames) {
+      const st = scene.data.stats(name)
+      channels[name] = {
+        unit: scene.data.unit(name) ?? null,
+        count: (scene.data.series(name) ?? []).length,
+        min: st?.min ?? null,
+        max: st?.max ?? null,
+      }
+    }
+    const summary = {
+      width: this.width,
+      height: this.height,
+      fps: this.fps,
+      durationSec: scene.timeline.durationSec,
+      frameCount: scene.timeline.frameCount,
+      segments: this.segments.length,
+      clock: seg0 ? { startUtc: seg0.startUtc, confidence: seg0.clockSource, verified: seg0.verified === true } : null,
+      timezone: this.timezone,
+      channels,
+      layers: scene.built.map((b) => b.type),
+    }
+    return { scene, summary }
   }
 
   /** Draw one frame's overlay layers onto `ctx`; the caller handles clear / background / base. */
@@ -394,8 +437,8 @@ export class Engine {
     ctx.restore()
   }
 
-  async render() {
-    const scene = await this._scene()
+  async render({ scene = null, onProgress = null } = {}) {
+    scene = scene ?? (await this._scene())
     const { ctx, built, data } = scene
 
     const anchorMs = this.segments[0].startUtc
@@ -421,6 +464,7 @@ export class Engine {
         this._drawOverlay(ctx, built, data, scene, step)
         const { data: pixels } = ctx.getImageData(0, 0, this.width, this.height)
         await pipe.writeFrame(Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength))
+        onProgress?.(step.index + 1, scene.timeline.frameCount)
       }
     } finally {
       await pipe.finish()
@@ -432,8 +476,8 @@ export class Engine {
    * video frame at `atSec` (default: the middle of the timeline). With no base
    * video the overlay sits on `background` (or transparent). Writes `output`.
    */
-  async snapshot({ atSec = null, output = this.output } = {}) {
-    const scene = await this._scene()
+  async snapshot({ atSec = null, output = this.output, scene = null } = {}) {
+    scene = scene ?? (await this._scene())
     const { ctx, built, data, timeline } = scene
     const t = atSec != null ? atSec : timeline.durationSec / 2 // default: the middle frame
 

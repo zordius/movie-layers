@@ -70,21 +70,26 @@ npm run example:gpx         # sidecar .gpx, UTC-aligned to the timeline
 
 ## CLI
 
-Point it at a video; a GoPro clip (embedded `gpmd` GPS) is auto-detected and gets
-the full telemetry dashboard:
+The floor is **stitch the clips into one video**; a telemetry **dashboard** is added
+on top when the footage carries GPS (embedded or a sidecar `.gpx`).
 
 ```bash
-movie-layers GX065132.MP4                    # → GX065132-overlay.mp4
-movie-layers GH010001.MP4 GH020001.MP4       # concat clips into one timeline
+movie-layers GX065132.MP4                    # → GX065132-overlay.mp4 (GoPro auto-dashboard)
+movie-layers ./ride-folder                   # concat every clip in the folder (sorted)
+movie-layers GH010001.MP4 GH020001.MP4       # concat two clips into one timeline
 movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
-movie-layers clip.mp4 --snapshot             # one preview PNG (middle frame)
-movie-layers clip.mp4 --out out.mp4 --fps 30 --clock-offset -13
+movie-layers plain.mp4                       # no GPS → just stitch/encode (no dashboard)
+movie-layers clip.mp4 --snapshot --at 30     # one preview PNG at 30 s
 ```
 
-Pass several clips (same resolution / fps — chapters of one trip) to concat them
-into a single timeline; their telemetry is offset-merged across the join.
-`--snapshot` (optionally `--at SEC`, default the middle) renders a single PNG with
+Inputs are clips and/or directories (a directory expands to its videos, sorted);
+several inputs concat into one timeline (same resolution / fps), telemetry
+offset-merged across the join. A clip with **no GPS and no `--gpx`** isn't an error —
+it's stitched/encoded as-is (with just the date/time readout if the clip has a
+clock). `--snapshot` (optionally `--at SEC`, default the middle) writes one PNG with
 the overlay composited over that frame — a fast preview without encoding the video.
+The CLI logs each stage: inputs probed, telemetry found, widgets, render progress,
+and the result with its value ranges.
 
 The dashboard is authored in a 1080-tall **logical** space and the engine's
 `scaleBaseline` normalizes it, so the gadgets sit at the same relative position at
@@ -123,9 +128,10 @@ Done:
       continue-time fill + back-derive + gap detection; channel-merge precedence;
       timezone resolution (explicit > provider > default); `clockOffsetSec`
       manual fix for a wrong camera clock
-- [x] CLI: `movie-layers <video> [...]` → overlay; GoPro auto-dashboard,
-      aspect-aware (ratio-safe) layout, multi-clip concat, `--snapshot` PNG
-      preview, `--gpx` / `--clock-offset` / `--stabilize` flags
+- [x] CLI: `movie-layers <video|dir> [...]` → stitch + overlay; directory input,
+      multi-clip concat, GoPro auto-dashboard, no-GPS pass-through (stitch only),
+      aspect-aware (ratio-safe) layout, `--snapshot` PNG preview, staged logging,
+      `--gpx` / `--clock-offset` / `--stabilize` flags
 - [x] Dashboard presentation: per-gauge display smoothing (default-on,
       `--no-smooth`) + GPS-derived `speed` fallback (when device speed is absent) —
       see [`docs/dashboard-spec.md`](docs/dashboard-spec.md)

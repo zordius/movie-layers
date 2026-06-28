@@ -58,6 +58,7 @@ export class FfmpegPipe {
     outputArgs = ['-vcodec', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'],
     filter = '[0:v][1:v]overlay',
     creationTime = null,
+    logLevel = 'error', // ffmpeg -loglevel (quiet the banner/progress; errors still print). null = default
   }) {
     Object.assign(this, {
       width,
@@ -71,6 +72,7 @@ export class FfmpegPipe {
       outputArgs,
       filter,
       creationTime,
+      logLevel,
     })
     this._concatFile = null
   }
@@ -95,7 +97,7 @@ export class FfmpegPipe {
       '-i', 'pipe:0',
     ]
 
-    const args = ['-hide_banner', '-y']
+    const args = ['-hide_banner', '-y', ...(this.logLevel ? ['-loglevel', this.logLevel] : [])]
     if (this.baseVideos.length >= 1) {
       args.push(...this._baseInput(), ...rawIn, '-filter_complex', this.filter)
     } else {
