@@ -81,8 +81,10 @@ movie-layers clip.mp4 --out out.mp4 --fps 30 --clock-offset -13
 
 The dashboard is authored in a 1080-tall **logical** space and the engine's
 `scaleBaseline` normalizes it, so the gadgets sit at the same relative position at
-any resolution / aspect ratio (1080p, 2.7K, 4K, 4:3) — not just 1080p. `--help`
-lists every flag (`--stabilize` / `--no-stabilize`, `--no-datetime`, `--baseline`).
+any resolution (1080p, 2.7K, 4K) — not just 1080p. The layout is aspect-aware: a
+landscape clip (16:9 / 4:3) gets a bottom row of gauges, a portrait / vertical clip
+stacks them in a left column so nothing overflows. `--help` lists every flag
+(`--stabilize` / `--no-stabilize`, `--no-datetime`, `--baseline`).
 
 ## Requirements
 

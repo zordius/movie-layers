@@ -10,6 +10,7 @@
 // `scaleBaseline` normalizes it, so the gadgets sit correctly at any resolution /
 // aspect ratio (2.7K, 4K, 4:3, …), not just 1080p.
 import { basename, dirname, extname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { Engine, Source } from './index.js'
 import gopro from './providers/gopro.js'
@@ -60,22 +61,37 @@ function parseArgs(argv) {
 
 /**
  * Default telemetry dashboard, authored in a 1080-tall LOGICAL space (the engine's
- * `scaleBaseline` maps it to the real frame, so positions hold at any aspect). The
- * bottom row is laid left→right; widgets are omitted when their channel is absent
- * (e.g. `speed` after `--stabilize`).
+ * `scaleBaseline` maps it to the real frame, so positions hold at any resolution).
+ * The gauges normally form a bottom ROW (landscape), but that row spans ~x40..730
+ * and overflows a narrow logical canvas — so for portrait / vertical aspects
+ * (`logicalW < ROW_MIN`) they STACK in a left column instead. Widgets are omitted
+ * when their channel is absent (e.g. `speed` after `--stabilize`).
+ *
+ * @param {{hasSpeed:boolean, withDatetime:boolean, logicalW:number}} o
+ *   logicalW = baseline × (videoWidth / videoHeight) — the logical canvas width.
  */
-function defaultLayout({ hasSpeed, withDatetime }) {
-  const row = 985 // bottom row baseline (of 1080)
+export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920 }) {
+  const ROW_MIN = 760 // the bottom row (latlon+altitude+gradient) needs ~this much width
   const layout = [{ type: 'track', x: 40, y: 40, width: 170, height: 360 }]
-  let x = 40
-  if (hasSpeed) {
-    layout.push({ type: 'speed', x: 40, y: 895 }) // sits above the bottom row, left
+
+  if (logicalW >= ROW_MIN) {
+    // landscape: gauges along the bottom, speed above the row on the left
+    if (hasSpeed) layout.push({ type: 'speed', x: 40, y: 895 })
+    let x = 40
+    layout.push({ type: 'latlon', x, y: 985, windowSec: 4 })
+    x += 290
+    layout.push({ type: 'altitude', x, y: 985 })
+    x += 200
+    layout.push({ type: 'gradient', x, y: 985 })
+  } else {
+    // portrait / narrow: stack the gauges bottom-up along the left edge
+    let y = 985
+    for (const type of ['gradient', 'altitude', 'latlon', ...(hasSpeed ? ['speed'] : [])]) {
+      layout.push(type === 'latlon' ? { type, x: 40, y, windowSec: 4 } : { type, x: 40, y })
+      y -= 90
+    }
   }
-  layout.push({ type: 'latlon', x, y: row, windowSec: 4 })
-  x += 290
-  layout.push({ type: 'altitude', x, y: row })
-  x += 200
-  layout.push({ type: 'gradient', x, y: row })
+
   if (withDatetime) layout.push({ type: 'datetime' }) // self-positions top-left
   return layout
 }
@@ -94,11 +110,14 @@ async function main() {
   const baseline = args.baseline ? Number(args.baseline) : 1080
   const withDatetime = !args.noDatetime
 
-  // probe: GoPro telemetry present?
+  // probe: GoPro telemetry present? + geometry (for the responsive layout)
   const src = new Source(input)
   let hasGps = false
+  let logicalW = baseline * (16 / 9) // fallback aspect if the probe can't size it
   try {
     hasGps = await src.hasStream('gpmd')
+    const info = await src.info()
+    if (info?.width && info?.height) logicalW = baseline * (info.width / info.height)
   } catch (e) {
     console.error(`error: cannot read ${input} — ${e.message}`)
     process.exit(1)
@@ -128,7 +147,7 @@ async function main() {
     scaleBaseline: baseline, // <-- ratio fix: normalize gadget positions to a 1080 logical space
     clockOffsetSec: args['clock-offset'] ? Number(args['clock-offset']) : 0,
     providers: [dataProvider, dashboard, datetime],
-    layout: defaultLayout({ hasSpeed, withDatetime }),
+    layout: defaultLayout({ hasSpeed, withDatetime, logicalW }),
     output: out,
   })
 
@@ -137,7 +156,10 @@ async function main() {
   console.log(`done: ${out}`)
 }
 
-main().catch((e) => {
-  console.error(`error: ${e.message}`)
-  process.exit(1)
-})
+// run only as the CLI entry, so the module can be imported (e.g. for tests)
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((e) => {
+    console.error(`error: ${e.message}`)
+    process.exit(1)
+  })
+}
