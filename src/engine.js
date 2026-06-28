@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import { createCanvas, loadImage } from '@napi-rs/canvas'
 
-import { FfmpegPipe, extractFrame } from './ffmpeg.js'
+import { FfmpegPipe, extractFrame, concatCopy } from './ffmpeg.js'
 import { Registry } from './layer.js'
 import { DataSet } from './data.js'
 import { Timeline } from './timeline.js'
@@ -437,11 +437,22 @@ export class Engine {
     ctx.restore()
   }
 
-  async render({ scene = null, onProgress = null } = {}) {
+  async render({ scene = null, onProgress = null, onCommand = null } = {}) {
     scene = scene ?? (await this._scene())
     const { ctx, built, data } = scene
 
     const anchorMs = this.segments[0].startUtc
+
+    // No overlay layers + a base video → nothing to draw, so stitch losslessly
+    // (stream copy) instead of re-encoding every frame through the canvas pipe.
+    if (built.length === 0 && this.baseVideos.length >= 1) {
+      return concatCopy(this.baseVideos, this.output, {
+        ffmpeg: this.ffmpegOptions.ffmpeg,
+        creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
+        onCommand,
+      })
+    }
+
     const pipe = new FfmpegPipe({
       width: this.width,
       height: this.height,
@@ -451,6 +462,7 @@ export class Engine {
       output: this.output,
       pixfmt: 'rgba',
       creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
+      onCommand,
       ...this.ffmpegOptions,
     }).start()
 
@@ -476,7 +488,7 @@ export class Engine {
    * video frame at `atSec` (default: the middle of the timeline). With no base
    * video the overlay sits on `background` (or transparent). Writes `output`.
    */
-  async snapshot({ atSec = null, output = this.output, scene = null } = {}) {
+  async snapshot({ atSec = null, output = this.output, scene = null, onCommand = null } = {}) {
     scene = scene ?? (await this._scene())
     const { ctx, built, data, timeline } = scene
     const t = atSec != null ? atSec : timeline.durationSec / 2 // default: the middle frame
@@ -493,7 +505,7 @@ export class Engine {
     // composite over the base video frame (seek the step's own segment file), else background
     const file = this.sources[step.segment.index]?.file
     if (file) {
-      const png = await extractFrame(file, step.segment.localTimeSec, { ffmpeg: this.ffmpegOptions.ffmpeg })
+      const png = await extractFrame(file, step.segment.localTimeSec, { ffmpeg: this.ffmpegOptions.ffmpeg, onCommand })
       const img = await loadImage(png)
       ctx.drawImage(img, 0, 0, this.width, this.height)
     } else if (this.background) {

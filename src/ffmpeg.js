@@ -11,13 +11,11 @@ let seq = 0
  * `-i` is a fast (keyframe) seek — fine for a preview thumbnail. Used by
  * Engine.snapshot to composite the overlay over the real footage.
  */
-export function extractFrame(file, atSec, { ffmpeg = 'ffmpeg' } = {}) {
+export function extractFrame(file, atSec, { ffmpeg = 'ffmpeg', onCommand = null } = {}) {
+  const args = ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, atSec)), '-i', file, '-frames:v', '1', '-f', 'image2', '-vcodec', 'png', '-']
+  onCommand?.([ffmpeg, ...args])
   return new Promise((resolveP, reject) => {
-    const proc = spawn(
-      ffmpeg,
-      ['-hide_banner', '-ss', String(Math.max(0, atSec)), '-i', file, '-frames:v', '1', '-f', 'image2', '-vcodec', 'png', '-'],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    )
+    const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     const chunks = []
     let err = ''
     proc.stdout.on('data', (d) => chunks.push(d))
@@ -30,6 +28,52 @@ export function extractFrame(file, atSec, { ffmpeg = 'ffmpeg' } = {}) {
         ? resolveP(Buffer.concat(chunks))
         : reject(new Error(`ffmpeg frame extract exited ${code}: ${err.trim()}`)),
     )
+  })
+}
+
+/**
+ * Lossless stitch — concat base videos with **stream copy** (no re-encode). Used
+ * when there is no overlay to draw: 1 file is a remux/copy, N files use the concat
+ * demuxer (identical codec/res/fps required — GoPro chapters qualify). Ignores
+ * fps/scale (there are no frames to render); fast and bit-exact.
+ */
+export function concatCopy(files, output, { ffmpeg = 'ffmpeg', creationTime = null, onCommand = null } = {}) {
+  return new Promise((resolveP, reject) => {
+    let concatFile = null
+    let input
+    if (files.length === 1) {
+      input = ['-i', files[0]]
+    } else {
+      concatFile = join(tmpdir(), `ml-stitch-${process.pid}-${seq++}.txt`)
+      writeFileSync(concatFile, files.map((f) => `file '${resolve(f)}'`).join('\n') + '\n')
+      input = ['-f', 'concat', '-safe', '0', '-i', concatFile]
+    }
+    const args = [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      ...input,
+      '-c', 'copy',
+      ...(creationTime ? ['-metadata', `creation_time=${creationTime}`] : []),
+      output,
+    ]
+    onCommand?.([ffmpeg, ...args])
+    const cleanup = () => {
+      if (concatFile) {
+        try {
+          unlinkSync(concatFile)
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+    const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'inherit'] })
+    proc.on('error', (e) => {
+      cleanup()
+      reject(new Error(`Unable to run ffmpeg (${e.message})`))
+    })
+    proc.on('close', (code) => {
+      cleanup()
+      code === 0 ? resolveP(output) : reject(new Error(`ffmpeg stitch exited with code ${code}`))
+    })
   })
 }
 
@@ -59,6 +103,7 @@ export class FfmpegPipe {
     filter = '[0:v][1:v]overlay',
     creationTime = null,
     logLevel = 'error', // ffmpeg -loglevel (quiet the banner/progress; errors still print). null = default
+    onCommand = null, // optional callback([ffmpeg, ...args]) — surfaces the command being run
   }) {
     Object.assign(this, {
       width,
@@ -73,6 +118,7 @@ export class FfmpegPipe {
       filter,
       creationTime,
       logLevel,
+      onCommand,
     })
     this._concatFile = null
   }
@@ -108,6 +154,7 @@ export class FfmpegPipe {
     if (this.creationTime) args.push('-metadata', `creation_time=${this.creationTime}`)
     args.push(this.output)
 
+    this.onCommand?.([this.ffmpeg, ...args])
     this.proc = spawn(this.ffmpeg, args, { stdio: ['pipe', 'inherit', 'inherit'] })
     this.closed = once(this.proc, 'close')
     return this

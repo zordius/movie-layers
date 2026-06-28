@@ -231,15 +231,21 @@ async function main() {
   console.log(`widgets: ${summary.layers.join(' · ') || '(none — stitch only)'}`)
 
   // ── Stage 3: do it ───────────────────────────────────────────────────────────
+  const logCmd = (cmd) => console.log(`  $ ${cmd.join(' ')}`)
   if (args.snapshot) {
     const at = args.at != null ? Number(args.at) : null
     console.log(`snapshot @ ${at != null ? `${at}s` : 'middle'} → ${out}`)
-    await engine.snapshot({ atSec: at, output: out, scene })
+    await engine.snapshot({ atSec: at, output: out, scene, onCommand: logCmd })
+  } else if (summary.layers.length === 0) {
+    // no overlay → lossless stream-copy stitch (one ffmpeg call, no per-frame work)
+    console.log(`stitching → ${out}`)
+    await engine.render({ scene, onCommand: logCmd })
   } else {
     console.log(`rendering → ${out}  (${summary.frameCount} frames @ ${fps}fps)`)
     let pct = -1
     await engine.render({
       scene,
+      onCommand: logCmd,
       onProgress: (i, n) => {
         const p = Math.floor((i / n) * 100)
         if (p !== pct) {
