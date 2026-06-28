@@ -276,10 +276,23 @@ export class Engine {
     const canvas = createCanvas(this.width, this.height)
     const ctx = canvas.getContext('2d')
 
+    // Per-segment timing for ALL segments (file-bearing AND fileless), so a
+    // sidecar provider can UTC-align its samples against the timeline even with no
+    // base video (where `sources` is empty). `startUtc` here is the structural
+    // anchor (explicit / creation_time) — GPS upgrades land later in
+    // _resolveClocks; sidecar best-clock-wins (spec §5) is a separate follow-up.
+    let acc = 0
+    const segmentInfos = this.segments.map((seg, i) => {
+      const info = { index: i, offset: acc, startUtc: seg.startUtc, durationSec: seg.durationSec }
+      acc += seg.durationSec
+      return info
+    })
+
     // load all data providers once, up front (parse → channels); each gets the
-    // shared sources + its own config
+    // shared sources, the segment timeline, and its own config
     const dataset = await DataSet.load(this.dataProviders, {
       sources: this.sources.filter(Boolean),
+      segments: segmentInfos,
       config: this.dataConfig,
       merge: this.channelMerge,
     })

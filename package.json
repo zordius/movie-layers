@@ -11,12 +11,14 @@
     "./svg": "./src/providers/svg.js",
     "./dashboard": "./src/providers/dashboard.js",
     "./datetime": "./src/providers/datetime.js",
-    "./gopro": "./src/providers/gopro.js"
+    "./gopro": "./src/providers/gopro.js",
+    "./gpx": "./src/providers/gpx.js"
   },
   "scripts": {
     "example": "node examples/basic.js",
     "example:svg": "node examples/svg.js",
-    "example:dashboard": "node examples/dashboard.js"
+    "example:dashboard": "node examples/dashboard.js",
+    "example:gpx": "node examples/gpx.js"
   },
   "keywords": [
     "video",
@@ -35,6 +37,7 @@
   "license": "GPL-3.0-or-later",
   "dependencies": {
     "@napi-rs/canvas": "^0.1.0",
-    "gpx-from-gopro": "file:../gpx-stabilizer/packages/gopro"
+    "gpx-from-gopro": "file:../gpx-stabilizer/packages/gopro",
+    "gpx-stabilizer": "file:../gpx-stabilizer/packages/core"
   }
 }

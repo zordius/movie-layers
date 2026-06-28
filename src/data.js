@@ -128,11 +128,11 @@ export class DataSet {
    *
    * (Mirrors gopro-dashboard-overlay's --gpx-merge OVERWRITE.)
    */
-  static async load(dataProviders, { sources = [], config = {}, merge = {} } = {}) {
+  static async load(dataProviders, { sources = [], segments = [], config = {}, merge = {} } = {}) {
     const set = new DataSet()
     const owner = new Map() // channel name -> provider name currently owning it
     for (const provider of dataProviders) {
-      const result = await provider.data({ sources, config })
+      const result = await provider.data({ sources, segments, config })
       // a provider may report a constant timezone (e.g. derived from GPS); first wins
       if (set.timezone == null && result?.timezone) set.timezone = result.timezone
       // …and per-segment wall-clock candidates (e.g. GPS startUtc), keyed by source

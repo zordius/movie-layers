@@ -65,6 +65,7 @@ npm install
 npm run example             # basic box demo      → out.mp4
 npm run example:svg         # SVG animation layer
 npm run example:dashboard   # gopro + dashboard widgets
+npm run example:gpx         # sidecar .gpx, UTC-aligned to the timeline
 ```
 
 ## Requirements
@@ -85,8 +86,8 @@ Done:
 - [x] Data model: interpolated `frame.data` (`get`/`series`/`stats`/`unit`/`has`)
       + `needs` validation
 - [x] Providers: `svg`, `gopro` (gps/speed/altitude/gradient channels + GPS→tz
-      timezone + per-segment GPS clock candidates), `dashboard` (widget layer
-      pack), `datetime`
+      timezone + per-segment GPS clock candidates), `gpx` (sidecar `.gpx`,
+      UTC-aligned to the timeline), `dashboard` (widget layer pack), `datetime`
 - [x] Segment timeline: two clocks (continuous playback + per-segment wall
       clock), multi-video concat (per-segment probe, cumulative offsets, shared
       `Source`, dimension guard)
@@ -97,7 +98,8 @@ Done:
 Planned:
 
 - [ ] `provider-map`
-- [ ] Sidecar (`.gpx`/`.fit`) UTC alignment; `sourceInPoint` (segment trimming)
+- [ ] Sidecar `.fit` UTC alignment (binary FIT decoder — `.gpx` is done); best-clock-wins
+      (sidecar clock overriding a weak video clock); `sourceInPoint` (segment trimming)
 - [ ] Perf: `toBuffer('raw')` + `bgra` (premultiplied) fast path; DoubleBuffer-style
       writer to overlap draw with the pipe write; GPU ffmpeg profiles (`overlay_cuda`)
 - [ ] Layout loader (declarative document → layers)

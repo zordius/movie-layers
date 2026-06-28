@@ -114,7 +114,7 @@ need is unmet. ✅
 
 ---
 
-## 3. Source model — `load({ sources, config })`
+## 3. Source model — `load({ sources, segments, config })`
 
 One signature; embedded vs sidecar is just which input `load` uses. ✅
 
@@ -122,16 +122,30 @@ One signature; embedded vs sidecar is just which input `load` uses. ✅
   `{ file, offset, duration, startUtc, bytes(streamTag) }`. A provider reading
   data embedded **in the video** uses these. The engine is the **only** owner of
   the video file list, so embedded providers never name a file themselves.
+- **`segments`** — the full per-segment timeline `{ index, offset, startUtc,
+  durationSec }` for **every** segment, *including fileless ones* (`sources` only
+  carries file-bearing segments). A **sidecar** provider UTC-aligns against these,
+  so a sidecar render works even with no base video. ✅
 - **`config`** — the provider's own bound options. A provider reading an
   **external sidecar file** (Garmin `.gpx`/`.fit`) is parameterized at
   construction (`gpx({ file: 'ride.gpx' })`) and reads its own path.
 
 Time alignment differs (but both happen up front):
 
-| | bytes from | sample-time → global clock |
-|---|---|---|
-| in-video | engine `sources` | structural: add segment `offset` |
-| sidecar | own bound file | absolute UTC: match against segment `startUtc` anchors |
+| | bytes from | sample-time → global clock | status |
+|---|---|---|---|
+| in-video | engine `sources` | structural: add segment `offset` | ✅ |
+| sidecar | own bound file | absolute UTC: `offset + (sampleUtc − startUtc)/1000`, matched against each segment's wall-clock window | ✅ `.gpx` · 🔜 `.fit` |
+
+**Sidecar `.gpx` ✅** (`provider-gpx`, adapting `gpx-stabilizer`'s zero-dep
+`readGpx`): each track point's absolute UTC is matched to the segment whose
+`[startUtc, startUtc + duration)` window holds it, then placed at `offset +
+(sampleUtc − startUtc)/1000`; points outside every window are dropped. Produces
+`gps`/`speed`/`altitude` channels and merges via §6. `.fit` (binary) needs its own
+decoder — the alignment path is format-agnostic, so a FIT reader drops straight in.
+Alignment uses the clock resolved at data-load time (explicit > `creation_time`);
+letting an authoritative sidecar clock override a weak *video* clock is the
+separate "best-clock-wins" item (§5).
 
 **Shared `Source` ✅.** The base video is probed **once** (cheap, format-
 agnostic ffprobe) and shared with the engine and every provider; per-stream
@@ -170,7 +184,7 @@ per-segment `creation_time` anchors, concat list builder, dimension guard)
 **Invocation.** The engine hands each provider the full `sources` list ✅, and a
 provider applies each segment's `offset` when merging its samples onto the global
 timeline ✅ (`provider-gopro` reads every file-bearing source and offset-merges).
-Sidecar UTC alignment (external `.gpx`/`.fit`) is 🔜.
+Sidecar UTC alignment (external `.gpx`) is ✅ (`provider-gpx`, §3); `.fit` is 🔜.
 
 ---
 
@@ -297,7 +311,9 @@ shared cached `Source`; `probeVideo` + base-video config resolution; segment-bas
 two-clock `Timeline`; multi-video concat (per-segment probe, cumulative offsets,
 per-segment `creation_time` anchors, concat list builder, dimension guard);
 channel-merge precedence; timezone resolution (explicit > provider > default);
-`provider-svg`; `provider-gopro` (gps/speed/altitude + derived gradient channels,
+`provider-svg`; `provider-gpx` (sidecar `.gpx` → gps/speed/altitude channels,
+UTC-aligned to the segment timeline, adapts `gpx-stabilizer`'s `readGpx`, §3);
+`provider-gopro` (gps/speed/altitude + derived gradient channels,
 GPS→tz timezone, per-segment GPS `clocks` candidates — adapts `gpx-from-gopro`,
 multi-source offset-merge); **clock resolution** — per-segment pick (explicit >
 GPS > creation_time) + continue-time fill + back-derive (unverified-GPS chapter from
@@ -305,7 +321,8 @@ a verified neighbour) + gap detection, `frame.segment.{confidence,gap}`;
 **regression-verified true start** (`gpx-from-gopro` regresses UTC vs media-offset
 `cts`, slope ≈ 1 gate; provider anchors on the verified start, restoring pre-display gray).
 
-🔜 Planned: sidecar (`.gpx`/`.fit`) UTC alignment; `sourceInPoint`
-(segment trimming); provider-private `setup` → shared resources; perf path
-(`toBuffer('raw')`/bgra, DoubleBuffer, GPU
-profiles).
+🔜 Planned: sidecar `.fit` UTC alignment (binary FIT decoder — the `.gpx`
+alignment path is done, §3); best-clock-wins (authoritative sidecar clock
+overriding a weak video clock, §5); `sourceInPoint` (segment trimming);
+provider-private `setup` → shared resources; perf path (`toBuffer('raw')`/bgra,
+DoubleBuffer, GPU profiles).

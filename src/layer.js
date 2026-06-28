@@ -36,8 +36,12 @@ export class Layer {
  * A provider module exports a Provider: `{ name, data?, layers? }` — at least
  * one facet.
  *
- *  - `data`   — async ({ sources, config }) => ({ channels, ... }); a
- *               time-varying data source (see data.js).
+ *  - `data`   — async ({ sources, segments, config }) => ({ channels, ... }); a
+ *               time-varying data source (see data.js). `sources` are the
+ *               file-bearing base-video segments (embedded providers read these);
+ *               `segments` is the full per-segment timeline
+ *               `{ index, offset, startUtc, durationSec }` incl. fileless ones (a
+ *               sidecar provider UTC-aligns against these).
  *  - `layers` — map of `type` → factory `(config, ctx) => Layer`, or
  *               `{ needs: [channel], create }` to declare the channels a layer
  *               reads (validated up-front against the loaded DataSet).

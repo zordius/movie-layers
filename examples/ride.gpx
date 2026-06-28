@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="movie-layers-example" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>sidecar demo ride</name>
+    <time>2026-01-16T13:54:39Z</time>
+  </metadata>
+  <trk>
+    <name>sidecar demo ride</name>
+    <trkseg>
+      <trkpt lat="37.62400" lon="140.03400"><ele>1100</ele><time>2026-01-16T13:54:39Z</time><extensions><speed>8.0</speed></extensions></trkpt>
+      <trkpt lat="37.62412" lon="140.03410"><ele>1102</ele><time>2026-01-16T13:54:40Z</time><extensions><speed>8.2</speed></extensions></trkpt>
+      <trkpt lat="37.62424" lon="140.03420"><ele>1104</ele><time>2026-01-16T13:54:41Z</time><extensions><speed>8.4</speed></extensions></trkpt>
+      <trkpt lat="37.62436" lon="140.03430"><ele>1106</ele><time>2026-01-16T13:54:42Z</time><extensions><speed>8.6</speed></extensions></trkpt>
+      <trkpt lat="37.62448" lon="140.03440"><ele>1108</ele><time>2026-01-16T13:54:43Z</time><extensions><speed>9.0</speed></extensions></trkpt>
+      <trkpt lat="37.62460" lon="140.03450"><ele>1110</ele><time>2026-01-16T13:54:44Z</time><extensions><speed>8.7</speed></extensions></trkpt>
+      <trkpt lat="37.62472" lon="140.03460"><ele>1112</ele><time>2026-01-16T13:54:45Z</time><extensions><speed>8.4</speed></extensions></trkpt>
+      <trkpt lat="37.62484" lon="140.03470"><ele>1114</ele><time>2026-01-16T13:54:46Z</time><extensions><speed>8.1</speed></extensions></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
