@@ -69,32 +69,36 @@ function parseArgs(argv) {
 /**
  * Default telemetry dashboard, authored in a 1080-tall LOGICAL space (the engine's
  * `scaleBaseline` maps it to the real frame, so positions hold at any resolution).
- * The gauges normally form a bottom ROW (landscape), but that row spans ~x40..730
- * and overflows a narrow logical canvas — so for portrait / vertical aspects
- * (`logicalW < ROW_MIN`) they STACK in a left column instead. Widgets are omitted
- * when their channel is absent (e.g. `speed` after `--stabilize`).
+ * Gadgets hug the edges (M-px margin): datetime top-left corner, track on the left
+ * under it, the gauges along the bottom edge. That bottom row spans ~x5..671 and
+ * overflows a narrow logical canvas — so for portrait / vertical aspects
+ * (`logicalW < ROW_MIN`) the gauges STACK in a left column instead. Widgets are
+ * omitted when their channel is absent (e.g. `speed` after `--stabilize`).
  *
  * @param {{hasSpeed:boolean, withDatetime:boolean, logicalW:number}} o
  *   logicalW = baseline × (videoWidth / videoHeight) — the logical canvas width.
  */
 export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920 }) {
-  const ROW_MIN = 760 // the bottom row (latlon+altitude+gradient) needs ~this much width
-  const layout = [{ type: 'track', x: 40, y: 40, width: 170, height: 360 }]
+  const M = 5 // edge margin (logical px) — hug the corners
+  const row = 997 // bottom-row top: panel height ≈ 78 → its bottom sits ~M from 1080
+  const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~x5..671
+  // track hugs the left edge, below the datetime bar (≈44 px tall) so they don't overlap
+  const layout = [{ type: 'track', x: M, y: 55, width: 170, height: 360 }]
 
   if (logicalW >= ROW_MIN) {
-    // landscape: gauges along the bottom, speed above the row on the left
-    if (hasSpeed) layout.push({ type: 'speed', x: 40, y: 895 })
-    let x = 40
-    layout.push({ type: 'latlon', x, y: 985, windowSec: 4 })
-    x += 290
-    layout.push({ type: 'altitude', x, y: 985 })
-    x += 200
-    layout.push({ type: 'gradient', x, y: 985 })
+    // landscape: gauges along the bottom edge, speed just above the row on the left
+    if (hasSpeed) layout.push({ type: 'speed', x: M, y: 914 })
+    let x = M
+    layout.push({ type: 'latlon', x, y: row, windowSec: 4 })
+    x += 281 // latlon panel (276) + M
+    layout.push({ type: 'altitude', x, y: row })
+    x += 185 // altitude panel (180) + M
+    layout.push({ type: 'gradient', x, y: row })
   } else {
     // portrait / narrow: stack the gauges bottom-up along the left edge
-    let y = 985
+    let y = row
     for (const type of ['gradient', 'altitude', 'latlon', ...(hasSpeed ? ['speed'] : [])]) {
-      layout.push(type === 'latlon' ? { type, x: 40, y, windowSec: 4 } : { type, x: 40, y })
+      layout.push(type === 'latlon' ? { type, x: M, y, windowSec: 4 } : { type, x: M, y })
       y -= 90
     }
   }
