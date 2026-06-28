@@ -79,7 +79,7 @@ movie-layers ./ride-folder                   # concat every clip in the folder (
 movie-layers GH010001.MP4 GH020001.MP4       # concat two clips into one timeline
 movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
 movie-layers plain.mp4                       # no GPS → just stitch/encode (no dashboard)
-movie-layers clip.mp4 --snapshot --at 30     # one preview PNG at 30 s
+movie-layers clip.mp4 --snapshot --at 30 --open  # preview PNG at 30 s, then open it
 ```
 
 Inputs are clips and/or directories (a directory expands to its videos, sorted);

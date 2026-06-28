@@ -14,6 +14,7 @@
 // dashboard; the layout is authored in a 1080-tall LOGICAL space and the engine's
 // `scaleBaseline` normalizes it, so the gadgets sit correctly at any resolution /
 // aspect ratio (2.7K, 4K, 4:3, …), not just 1080p.
+import { spawn } from 'node:child_process'
 import { readdirSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,6 +42,7 @@ options:
   --out FILE            output path (default: <first-video>-overlay.mp4 / .png, same dir)
   --snapshot            render one preview PNG instead of a video
   --at SEC              snapshot time in seconds (default: the middle of the clip)
+  --open                open the output when done (in the default viewer)
   --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
   --fps N               output framerate (default 30)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
@@ -64,6 +66,7 @@ function parseArgs(argv) {
     else if (t === '--no-datetime') a.noDatetime = true
     else if (t === '--no-smooth') a.noSmooth = true
     else if (t === '--snapshot') a.snapshot = true
+    else if (t === '--open') a.open = true
     else if (t === '--stabilize') a.stabilize = true
     else if (t === '--no-stabilize') a.noStabilize = true
     else if (t.startsWith('--')) a[t.slice(2)] = argv[++i] // flag takes the next token
@@ -78,6 +81,12 @@ const VIDEO_EXT = new Set(['.mp4', '.mov', '.m4v', '.mkv'])
 function fmtDur(sec) {
   sec = Math.max(0, Math.round(sec))
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
+}
+
+/** Open a file in the OS default viewer (`--open`), detached so it doesn't block. */
+function openFile(path) {
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
+  spawn(cmd, [path], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' }).unref()
 }
 
 /** Expand each input: a directory → its video files (sorted by name); a file → itself. */
@@ -275,6 +284,8 @@ async function main() {
   if (c.altitude?.min != null) bits.push(`alt ${c.altitude.min.toFixed(0)}–${c.altitude.max.toFixed(0)} ${c.altitude.unit}`)
   if (c.gradient?.min != null) bits.push(`grade ${c.gradient.min.toFixed(0)}–${c.gradient.max.toFixed(0)} ${c.gradient.unit}`)
   if (bits.length) console.log(`  ${bits.join(', ')}`)
+
+  if (args.open) openFile(out)
 }
 
 // run only as the CLI entry, so the module can be imported (e.g. for tests)
