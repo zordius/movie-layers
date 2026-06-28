@@ -115,6 +115,13 @@ instead declares `needsClock: true` (e.g. the datetime widget) — same fail-fas
 contract: if no segment resolves a `startUtc`, the engine throws up front rather
 than encoding blank `--:--:--`. ✅
 
+> **Gauge values & smoothing are a separate, presentation-layer concern.** How
+> channels become gauge *numbers* and how those numbers are kept visually steady —
+> display smoothing (motion, not data), the derived-`speed` fallback, and the
+> "derivative tower" principle (most gauges are projections of one 3D position
+> signal) — live in [`dashboard-spec.md`](dashboard-spec.md), not here. The data
+> layer stays raw; that layer sits on top.
+
 ---
 
 ## 3. Source model — `load({ sources, segments, config })`
@@ -350,4 +357,5 @@ correcting both sidecar alignment and displayed `dateTime` (§5).
 🔜 Planned: sidecar `.fit` UTC alignment (binary FIT decoder — the `.gpx`
 alignment path is done, §3); `sourceInPoint` (segment trimming);
 provider-private `setup` → shared resources; perf path (`toBuffer('raw')`/bgra,
-DoubleBuffer, GPU profiles).
+DoubleBuffer, GPU profiles); the dashboard presentation layer — display smoothing
++ derived-`speed` fallback (see [`dashboard-spec.md`](dashboard-spec.md)).
