@@ -68,6 +68,22 @@ npm run example:dashboard   # gopro + dashboard widgets
 npm run example:gpx         # sidecar .gpx, UTC-aligned to the timeline
 ```
 
+## CLI
+
+Point it at a video; a GoPro clip (embedded `gpmd` GPS) is auto-detected and gets
+the full telemetry dashboard:
+
+```bash
+movie-layers GX065132.MP4                    # → GX065132-overlay.mp4
+movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
+movie-layers clip.mp4 --out out.mp4 --fps 30 --clock-offset -13
+```
+
+The dashboard is authored in a 1080-tall **logical** space and the engine's
+`scaleBaseline` normalizes it, so the gadgets sit at the same relative position at
+any resolution / aspect ratio (1080p, 2.7K, 4K, 4:3) — not just 1080p. `--help`
+lists every flag (`--stabilize` / `--no-stabilize`, `--no-datetime`, `--baseline`).
+
 ## Requirements
 
 - Node ≥ 20 (developed on 26)

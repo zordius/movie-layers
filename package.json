@@ -6,6 +6,9 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "movie-layers": "src/cli.js"
+  },
   "exports": {
     ".": "./src/index.js",
     "./svg": "./src/providers/svg.js",
