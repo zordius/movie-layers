@@ -32,7 +32,9 @@ usage:
   movie-layers <video> [<video> ...] [options]
 
 options:
-  --out FILE            output path (default: <first-video>-overlay.mp4, same dir)
+  --out FILE            output path (default: <first-video>-overlay.mp4 / .png, same dir)
+  --snapshot           render one preview PNG instead of a video
+  --at SEC             snapshot time in seconds (default: the middle of the clip)
   --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
   --fps N               output framerate (default 30)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
@@ -55,6 +57,7 @@ function parseArgs(argv) {
     if (t === '-h' || t === '--help') a.help = true
     else if (t === '--no-datetime') a.noDatetime = true
     else if (t === '--no-smooth') a.noSmooth = true
+    else if (t === '--snapshot') a.snapshot = true
     else if (t === '--stabilize') a.stabilize = true
     else if (t === '--no-stabilize') a.noStabilize = true
     else if (t.startsWith('--')) a[t.slice(2)] = argv[++i] // flag takes the next token
@@ -109,8 +112,9 @@ async function main() {
 
   const files = args._ // one or more clips, concatenated in order
   const input = files[0] // first clip drives naming / probing
+  const ext = args.snapshot ? 'png' : 'mp4'
   const out =
-    args.out ?? join(dirname(input), `${basename(input, extname(input))}-overlay.mp4`)
+    args.out ?? join(dirname(input), `${basename(input, extname(input))}-overlay.${ext}`)
   const fps = args.fps ? Number(args.fps) : 30
   const baseline = args.baseline ? Number(args.baseline) : 1080
   const withDatetime = !args.noDatetime
@@ -162,8 +166,14 @@ async function main() {
 
   const what = args.gpx ? ` (gpx: ${args.gpx})` : hasGps ? ' (GoPro GPS)' : ''
   const src_ = files.length > 1 ? `${files.length} clips` : basename(input)
-  console.log(`rendering ${src_} -> ${out}${what}`)
-  await engine.render()
+  if (args.snapshot) {
+    const at = args.at != null ? Number(args.at) : null
+    console.log(`snapshot ${src_} @ ${at != null ? `${at}s` : 'middle'} -> ${out}${what}`)
+    await engine.snapshot({ atSec: at, output: out })
+  } else {
+    console.log(`rendering ${src_} -> ${out}${what}`)
+    await engine.render()
+  }
   console.log(`done: ${out}`)
 }
 

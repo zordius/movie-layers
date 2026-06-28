@@ -77,11 +77,14 @@ the full telemetry dashboard:
 movie-layers GX065132.MP4                    # → GX065132-overlay.mp4
 movie-layers GH010001.MP4 GH020001.MP4       # concat clips into one timeline
 movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
+movie-layers clip.mp4 --snapshot             # one preview PNG (middle frame)
 movie-layers clip.mp4 --out out.mp4 --fps 30 --clock-offset -13
 ```
 
 Pass several clips (same resolution / fps — chapters of one trip) to concat them
 into a single timeline; their telemetry is offset-merged across the join.
+`--snapshot` (optionally `--at SEC`, default the middle) renders a single PNG with
+the overlay composited over that frame — a fast preview without encoding the video.
 
 The dashboard is authored in a 1080-tall **logical** space and the engine's
 `scaleBaseline` normalizes it, so the gadgets sit at the same relative position at
@@ -121,8 +124,8 @@ Done:
       timezone resolution (explicit > provider > default); `clockOffsetSec`
       manual fix for a wrong camera clock
 - [x] CLI: `movie-layers <video> [...]` → overlay; GoPro auto-dashboard,
-      aspect-aware (ratio-safe) layout, multi-clip concat, `--gpx` /
-      `--clock-offset` / `--stabilize` flags
+      aspect-aware (ratio-safe) layout, multi-clip concat, `--snapshot` PNG
+      preview, `--gpx` / `--clock-offset` / `--stabilize` flags
 - [x] Dashboard presentation: per-gauge display smoothing (default-on,
       `--no-smooth`) + GPS-derived `speed` fallback (when device speed is absent) —
       see [`docs/dashboard-spec.md`](docs/dashboard-spec.md)

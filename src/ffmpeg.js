@@ -7,6 +7,33 @@ import { join, resolve } from 'node:path'
 let seq = 0
 
 /**
+ * Decode a single video frame at `atSec` and return it as PNG bytes. `-ss` before
+ * `-i` is a fast (keyframe) seek — fine for a preview thumbnail. Used by
+ * Engine.snapshot to composite the overlay over the real footage.
+ */
+export function extractFrame(file, atSec, { ffmpeg = 'ffmpeg' } = {}) {
+  return new Promise((resolveP, reject) => {
+    const proc = spawn(
+      ffmpeg,
+      ['-hide_banner', '-ss', String(Math.max(0, atSec)), '-i', file, '-frames:v', '1', '-f', 'image2', '-vcodec', 'png', '-'],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    )
+    const chunks = []
+    let err = ''
+    proc.stdout.on('data', (d) => chunks.push(d))
+    proc.stderr.on('data', (d) => {
+      err += d
+    })
+    proc.on('error', (e) => reject(new Error(`Unable to run ffmpeg (${e.message})`)))
+    proc.on('close', (code) =>
+      code === 0 && chunks.length
+        ? resolveP(Buffer.concat(chunks))
+        : reject(new Error(`ffmpeg frame extract exited ${code}: ${err.trim()}`)),
+    )
+  })
+}
+
+/**
  * The ffmpeg seam. Modes (inherited from gopro-dashboard-overlay):
  *
  *   - 0 base videos → encode our RGBA frames.

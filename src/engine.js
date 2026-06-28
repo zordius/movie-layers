@@ -1,6 +1,8 @@
-import { createCanvas } from '@napi-rs/canvas'
+import { writeFileSync } from 'node:fs'
 
-import { FfmpegPipe } from './ffmpeg.js'
+import { createCanvas, loadImage } from '@napi-rs/canvas'
+
+import { FfmpegPipe, extractFrame } from './ffmpeg.js'
 import { Registry } from './layer.js'
 import { DataSet } from './data.js'
 import { Timeline } from './timeline.js'
@@ -281,7 +283,12 @@ export class Engine {
     }
   }
 
-  async render() {
+  /**
+   * Shared setup for render() and snapshot(): resolve config, load data, resolve
+   * clocks, build + validate layers, prep the canvas / timeline / scale. No ffmpeg,
+   * no drawing. Returns the pieces both paths draw with.
+   */
+  async _scene() {
     await this._resolve()
 
     const canvas = createCanvas(this.width, this.height)
@@ -345,7 +352,51 @@ export class Engine {
         )
       }
     }
-    const data = dataset.view()
+
+    const timeline = new Timeline({ segments: this.segments, fps: this.inputFps })
+    // global scale: the canvas stays physical, but layers draw in a LOGICAL space.
+    // s = explicit, else height/scaleBaseline, else 1. Scale is by HEIGHT, so the
+    // logical height is the baseline and the logical width = baseline × aspect.
+    const s = this._scale ?? (this._scaleBaseline ? this.height / this._scaleBaseline : 1)
+    this.scale = s
+    return { canvas, ctx, built, data: dataset.view(), timeline, s, logicalW: this.width / s, logicalH: this.height / s }
+  }
+
+  /** Draw one frame's overlay layers onto `ctx`; the caller handles clear / background / base. */
+  _drawOverlay(ctx, built, data, scene, step) {
+    const { timeline, s, logicalW, logicalH } = scene
+    const { index, timeSec, segment } = step
+    const lastIndex = timeline.frameCount - 1
+    data._t = timeSec
+    const dateTime =
+      segment.startUtc != null ? new Date(segment.startUtc + segment.localTimeSec * 1000) : null
+    const frame = {
+      index,
+      frameCount: timeline.frameCount,
+      isFirst: index === 0,
+      isLast: index === lastIndex,
+      timeSec,
+      dt: 1 / this.inputFps,
+      progress: lastIndex > 0 ? index / lastIndex : 0,
+      durationSec: timeline.durationSec,
+      fps: this.inputFps,
+      segment,
+      dateTime,
+      timezone: this.timezone,
+      data,
+      scale: s,
+      width: logicalW,
+      height: logicalH,
+    }
+    ctx.save()
+    ctx.scale(s, s)
+    for (const { instance } of built) instance.draw(ctx, frame)
+    ctx.restore()
+  }
+
+  async render() {
+    const scene = await this._scene()
+    const { ctx, built, data } = scene
 
     const anchorMs = this.segments[0].startUtc
     const pipe = new FfmpegPipe({
@@ -360,65 +411,53 @@ export class Engine {
       ...this.ffmpegOptions,
     }).start()
 
-    const timeline = new Timeline({ segments: this.segments, fps: this.inputFps })
-    const { frameCount, durationSec } = timeline
-    const lastIndex = frameCount - 1
-
-    // global scale: the canvas stays physical, but layers draw in a LOGICAL space.
-    // s = explicit, else height/scaleBaseline, else 1. Scale is by HEIGHT, so the
-    // logical height is the baseline and the logical width = baseline × aspect
-    // (uniform → no distortion; widgets author in logical px and anchor to edges).
-    const s = this._scale ?? (this._scaleBaseline ? this.height / this._scaleBaseline : 1)
-    const logicalW = this.width / s
-    const logicalH = this.height / s
-    this.scale = s
-
     try {
-      for (const { index, timeSec, segment } of timeline.steps()) {
+      for (const step of scene.timeline.steps()) {
         ctx.clearRect(0, 0, this.width, this.height)
         if (this.background) {
           ctx.fillStyle = this.background
           ctx.fillRect(0, 0, this.width, this.height)
         }
-
-        data._t = timeSec
-        const dateTime =
-          segment.startUtc != null
-            ? new Date(segment.startUtc + segment.localTimeSec * 1000)
-            : null
-
-        const frame = {
-          // playback clock (continuous)
-          index,
-          frameCount,
-          isFirst: index === 0,
-          isLast: index === lastIndex,
-          timeSec,
-          dt: 1 / this.inputFps,
-          progress: lastIndex > 0 ? index / lastIndex : 0,
-          durationSec,
-          fps: this.inputFps,
-          // segment + wall clock
-          segment,
-          dateTime,
-          timezone: this.timezone,
-          // data + geometry (logical space — see scale below)
-          data,
-          scale: s,
-          width: logicalW,
-          height: logicalH,
-        }
-
-        ctx.save()
-        ctx.scale(s, s)
-        for (const { instance } of built) instance.draw(ctx, frame)
-        ctx.restore()
-
+        this._drawOverlay(ctx, built, data, scene, step)
         const { data: pixels } = ctx.getImageData(0, 0, this.width, this.height)
         await pipe.writeFrame(Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength))
       }
     } finally {
       await pipe.finish()
     }
+  }
+
+  /**
+   * Render ONE frame to a PNG for preview — the overlay composited over the base
+   * video frame at `atSec` (default: the middle of the timeline). With no base
+   * video the overlay sits on `background` (or transparent). Writes `output`.
+   */
+  async snapshot({ atSec = null, output = this.output } = {}) {
+    const scene = await this._scene()
+    const { ctx, built, data, timeline } = scene
+    const t = atSec != null ? atSec : timeline.durationSec / 2 // default: the middle frame
+
+    // the timeline step nearest t
+    let step = null
+    for (const s of timeline.steps()) {
+      step = s
+      if (s.timeSec >= t) break
+    }
+    if (!step) throw new Error('snapshot: empty timeline (nothing to draw)')
+
+    ctx.clearRect(0, 0, this.width, this.height)
+    // composite over the base video frame (seek the step's own segment file), else background
+    const file = this.sources[step.segment.index]?.file
+    if (file) {
+      const png = await extractFrame(file, step.segment.localTimeSec, { ffmpeg: this.ffmpegOptions.ffmpeg })
+      const img = await loadImage(png)
+      ctx.drawImage(img, 0, 0, this.width, this.height)
+    } else if (this.background) {
+      ctx.fillStyle = this.background
+      ctx.fillRect(0, 0, this.width, this.height)
+    }
+    this._drawOverlay(ctx, built, data, scene, step)
+    writeFileSync(output, scene.canvas.toBuffer('image/png'))
+    return output
   }
 }
