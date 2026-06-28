@@ -130,8 +130,14 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920 }) {
   const M = 5 // edge margin (logical px) — hug the corners
   const row = 997 // bottom-row top: panel height ≈ 78 → its bottom sits ~M from 1080
   const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~x5..671
-  // track hugs the left edge, below the datetime bar (≈44 px tall) so they don't overlap
-  const layout = [{ type: 'track', x: M, y: 55, width: 170, height: 360 }]
+  // the track map is the big, glanceable widget → bottom-RIGHT corner, keeping the
+  // data-dense gauges + datetime in the top-left→bottom-left priority zone. Right-
+  // anchored via logicalW (clamped for a very narrow canvas).
+  const trackW = 170
+  const trackH = 360
+  const layout = [
+    { type: 'track', x: Math.max(M, logicalW - trackW - M), y: 1080 - trackH - M, width: trackW, height: trackH },
+  ]
 
   if (logicalW >= ROW_MIN) {
     // landscape: gauges along the bottom edge, speed just above the row on the left
