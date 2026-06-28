@@ -74,6 +74,12 @@ function parseArgs(argv) {
 
 const VIDEO_EXT = new Set(['.mp4', '.mov', '.m4v', '.mkv'])
 
+/** Human-readable duration: `42s` or `3m07s`. */
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec))
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
+}
+
 /** Expand each input: a directory → its video files (sorted by name); a file → itself. */
 export function expandInputs(inputs) {
   const out = []
@@ -232,6 +238,7 @@ async function main() {
 
   // ── Stage 3: do it ───────────────────────────────────────────────────────────
   const logCmd = (cmd) => console.log(`  $ ${cmd.join(' ')}`)
+  const t0 = Date.now()
   if (args.snapshot) {
     const at = args.at != null ? Number(args.at) : null
     console.log(`snapshot @ ${at != null ? `${at}s` : 'middle'} → ${out}`)
@@ -248,17 +255,20 @@ async function main() {
       onCommand: logCmd,
       onProgress: (i, n) => {
         const p = Math.floor((i / n) * 100)
-        if (p !== pct) {
-          pct = p
-          process.stdout.write(`\r  ${String(p).padStart(3)}%  (${i}/${n})  `)
-        }
+        if (p === pct) return
+        pct = p
+        const el = (Date.now() - t0) / 1000
+        const eta = i > 0 ? (el / i) * (n - i) : 0
+        process.stdout.write(
+          `\r  ${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total    `,
+        )
       },
     })
     process.stdout.write('\n')
   }
 
   // ── Stage 4: done ────────────────────────────────────────────────────────────
-  console.log(`done: ${out}  (${summary.durationSec.toFixed(1)}s, ${dims})`)
+  console.log(`done: ${out}  (${summary.durationSec.toFixed(1)}s, ${dims})  in ${fmtDur((Date.now() - t0) / 1000)}`)
   const c = summary.channels
   const bits = []
   if (c.speed?.max != null) bits.push(`speed ≤ ${c.speed.max.toFixed(1)} ${c.speed.unit}`)
