@@ -36,6 +36,7 @@ await new Engine({
     { type: 'speed', x: 5, y: 914 },
     { type: 'latlon', x: 5, y: 997, windowSec: 2 },
     { type: 'altitude', x: 286, y: 997 },
+    { type: 'gradient', x: 471, y: 997 },
     { type: 'datetime' },
   ],
 }).render()

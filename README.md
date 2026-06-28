@@ -86,8 +86,9 @@ Done:
 - [x] Data model: interpolated `frame.data` (`get`/`series`/`stats`/`unit`/`has`)
       + `needs` validation
 - [x] Providers: `svg`, `gopro` (gps/speed/altitude/gradient channels + GPS→tz
-      timezone + per-segment GPS clock candidates), `gpx` (sidecar `.gpx`,
-      UTC-aligned to the timeline), `dashboard` (widget layer pack), `datetime`
+      timezone + per-segment GPS clock candidates), `gpx` (sidecar `.gpx` →
+      gps/speed/altitude/gradient, UTC-aligned), `dashboard` (widget layer pack),
+      `datetime`
 - [x] Segment timeline: two clocks (continuous playback + per-segment wall
       clock), multi-video concat (per-segment probe, cumulative offsets, shared
       `Source`, dimension guard)

@@ -334,8 +334,9 @@ shared cached `Source`; `probeVideo` + base-video config resolution; segment-bas
 two-clock `Timeline`; multi-video concat (per-segment probe, cumulative offsets,
 per-segment `creation_time` anchors, concat list builder, dimension guard);
 channel-merge precedence; timezone resolution (explicit > provider > default);
-`provider-svg`; `provider-gpx` (sidecar `.gpx` → gps/speed/altitude channels,
-UTC-aligned to the segment timeline, adapts `gpx-stabilizer`'s `readGpx`, §3);
+`provider-svg`; `provider-gpx` (sidecar `.gpx` → gps/speed/altitude + derived
+gradient channels, UTC-aligned to the segment timeline, adapts `gpx-stabilizer`'s
+`readGpx`, §3; gradient via a shared `src/gradient.js` helper, also used by gopro);
 `provider-gopro` (gps/speed/altitude + derived gradient channels,
 GPS→tz timezone, per-segment GPS `clocks` candidates — adapts `gpx-from-gopro`,
 multi-source offset-merge); **clock resolution** — per-segment pick (explicit >

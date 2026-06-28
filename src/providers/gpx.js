@@ -26,7 +26,8 @@
  *
  * Parsing is delegated to `gpx-stabilizer`'s render-agnostic `readGpx` (zero-dep),
  * keeping movie-layers core format-agnostic (spec §0). Channels produced: `gps`
- * ({lat,lon}), and `speed` / `altitude` when the track carries them.
+ * ({lat,lon}); `speed` / `altitude` when the track carries them; and `gradient`
+ * derived from lat/lon/ele via the shared helper (same as provider-gopro).
  *
  * NOTE (best-clock-wins, spec §5): alignment uses the segment `startUtc` resolved
  * at data-load time (explicit > creation_time) — a GPS clock a video provider
@@ -36,6 +37,8 @@
  * video clock is the separate "best-clock-wins" follow-up.
  */
 import { readGpx } from 'gpx-stabilizer'
+
+import { gradientSamples } from '../gradient.js'
 
 const finite = (n) => typeof n === 'number' && Number.isFinite(n)
 
@@ -64,6 +67,8 @@ function goodPoints(points) {
  * @param {string} [opts.name]   provider name for channel-merge precedence (default 'gpx')
  * @param {number} [opts.maxGap=3]  seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim)
+ * @param {number} [opts.gradeWindowM=20]  distance window (m) the gradient slope is
+ *   measured over — wider = smoother, since GPS altitude is noisy per-sample
  * @returns {{name, data}} a movie-layers data provider
  */
 export default function gpx(opts = {}) {
@@ -101,7 +106,9 @@ export default function gpx(opts = {}) {
         gps: { unit: 'deg', maxGap, samples: [] },
         speed: { unit: 'km/h', maxGap, samples: [] },
         altitude: { unit: 'm', maxGap, samples: [] },
+        gradient: { unit: '%', maxGap, samples: [] },
       }
+      const placedPts = [] // {lat,lon,ele,t} of in-window points, for the gradient helper
 
       let placed = 0
       for (const p of good) {
@@ -114,6 +121,7 @@ export default function gpx(opts = {}) {
         channels.gps.samples.push({ t, value: { lat: p.lat, lon: p.lon } })
         if (finite(p.speed)) channels.speed.samples.push({ t, value: p.speed * 3.6 }) // m/s → km/h
         if (finite(p.ele)) channels.altitude.samples.push({ t, value: p.ele })
+        placedPts.push({ lat: p.lat, lon: p.lon, ele: p.ele, t })
         placed++
       }
 
@@ -122,6 +130,14 @@ export default function gpx(opts = {}) {
           `provider-gpx: parsed ${good.length} point(s) from ${path} but none fall within the ` +
             `rendered timeline's wall clock — check the sidecar covers the same time window as the footage`,
         )
+      }
+
+      // Gradient from the placed points (shared helper). A single sidecar track is
+      // spatially contiguous, so compute over the whole placed run — per-segment
+      // reset (for a track split across disjoint video segments) is a refinement;
+      // for the common N=1 case it is identical.
+      for (const s of gradientSamples(placedPts, { windowM: opts.gradeWindowM ?? 20 })) {
+        channels.gradient.samples.push(s)
       }
 
       // drop channels that stayed empty (e.g. a track with no <ele>)

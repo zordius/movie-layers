@@ -23,18 +23,7 @@
 // of `gpx-stabilizer` core, which is now zero-dep); see its docs/export-contract.md.
 import { readGoproTelemetry } from 'gpx-from-gopro'
 
-/** Great-circle horizontal distance between two lat/lon points, in metres. */
-function haversineM(a, b) {
-  const R = 6371000
-  const toRad = (d) => (d * Math.PI) / 180
-  const dLat = toRad(b.lat - a.lat)
-  const dLon = toRad(b.lon - a.lon)
-  const la1 = toRad(a.lat)
-  const la2 = toRad(b.lat)
-  const h =
-    Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)))
-}
+import { gradientSamples } from '../gradient.js'
 
 const finite = (n) => typeof n === 'number' && Number.isFinite(n)
 
@@ -78,24 +67,12 @@ function appendSegment(good, anchorUtc, offset, channels, W, minSpan) {
     if (finite(p.ele)) channels.altitude.samples.push({ t: ts[i], value: p.ele })
   }
 
-  // Gradient = Δaltitude / horizontal-distance over a ~W-metre baseline (not
-  // adjacent samples) to tame GPS vertical noise: the baseline is the most-recent
-  // earlier point ≥ W behind — dense samples smooth over ~W m, sparse samples
-  // (steps already > W apart) use the previous one. Cumulative distance is
-  // per-segment (resets each segment, since segments may be spatially disjoint).
-  const cum = [0]
-  for (let i = 1; i < good.length; i++) cum[i] = cum[i - 1] + haversineM(good[i - 1], good[i])
-  let lo = 0
-  let prev = 0
-  for (let i = 0; i < good.length; i++) {
-    if (!finite(good[i].ele)) continue
-    while (lo + 1 < i && cum[i] - cum[lo + 1] >= W) lo++ // most-recent point ≥ W behind
-    const span = cum[i] - cum[lo]
-    let g = prev
-    if (span >= minSpan && finite(good[lo].ele)) g = ((good[i].ele - good[lo].ele) / span) * 100
-    channels.gradient.samples.push({ t: ts[i], value: g })
-    prev = g
-  }
+  // Gradient via the shared helper. Cumulative distance is per-segment (segments
+  // may be spatially disjoint), so call it here — per segment — not across the
+  // whole track. Pass every good point (with its global `t`); the helper skips
+  // non-finite `ele` in the output but still counts it toward distance.
+  const pts = good.map((p, i) => ({ lat: p.lat, lon: p.lon, ele: p.ele, t: ts[i] }))
+  for (const s of gradientSamples(pts, { windowM: W, minSpan })) channels.gradient.samples.push(s)
 }
 
 /**
