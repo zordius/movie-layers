@@ -62,7 +62,9 @@ Run the bundled demo:
 
 ```bash
 npm install
-npm run example   # → out.mp4
+npm run example             # basic box demo      → out.mp4
+npm run example:svg         # SVG animation layer
+npm run example:dashboard   # gopro + dashboard widgets
 ```
 
 ## Requirements
@@ -74,10 +76,28 @@ npm run example   # → out.mp4
 
 ## Status / roadmap
 
-Early scaffold. The ffmpeg seam, layer/provider model, and render loop work.
+The ffmpeg seam, layer/provider model, render loop, and the full data & timeline
+architecture work. See [`docs/data-timeline-spec.md`](docs/data-timeline-spec.md)
+for the design and a per-feature ✅/🔜 breakdown.
 
-- [ ] Providers: `provider-gopro` (telemetry + dashboard widgets), `provider-svg`, `provider-map`
-- [ ] Timeline sync for a base video (global `t` → video frame; fps/duration alignment)
+Done:
+
+- [x] Data model: interpolated `frame.data` (`get`/`series`/`stats`/`unit`/`has`)
+      + `needs` validation
+- [x] Providers: `svg`, `gopro` (gps/speed/altitude/gradient channels + GPS→tz
+      timezone + per-segment GPS clock candidates), `dashboard` (widget layer
+      pack), `datetime`
+- [x] Segment timeline: two clocks (continuous playback + per-segment wall
+      clock), multi-video concat (per-segment probe, cumulative offsets, shared
+      `Source`, dimension guard)
+- [x] Clock resolution: per-segment pick (explicit > GPS > `creation_time`) +
+      continue-time fill + back-derive + gap detection; channel-merge precedence;
+      timezone resolution (explicit > provider > default)
+
+Planned:
+
+- [ ] `provider-map`
+- [ ] Sidecar (`.gpx`/`.fit`) UTC alignment; `sourceInPoint` (segment trimming)
 - [ ] Perf: `toBuffer('raw')` + `bgra` (premultiplied) fast path; DoubleBuffer-style
       writer to overlap draw with the pipe write; GPU ffmpeg profiles (`overlay_cuda`)
 - [ ] Layout loader (declarative document → layers)
