@@ -31,6 +31,10 @@ function fmt(dt, tz) {
  * dot, then `YYYY/MM/DD HH:MM:SS` (mono, zero-padded so it never jumps). The dot
  * pulses green↔gray on a 1-second cycle (synced to the ticking second when the
  * wall clock is valid, else to playback seconds), like a running heartbeat.
+ *
+ * Registered with `needsClock`, so the engine fails fast if NO segment has a wall
+ * clock — the `--:--:--` placeholder below then only appears on an individual
+ * clock-less segment / gap within an otherwise-clocked render, never a whole one.
  */
 class DateTime extends Layer {
   constructor(c = {}) {
@@ -78,6 +82,8 @@ class DateTime extends Layer {
 export default defineProvider({
   name: 'datetime',
   layers: {
-    datetime: (c) => new DateTime(c),
+    // needsClock: reads the wall clock, so the engine fails fast (before encoding)
+    // if no segment resolves a startUtc — rather than render blank `--:--:--`.
+    datetime: { needsClock: true, create: (c) => new DateTime(c) },
   },
 })

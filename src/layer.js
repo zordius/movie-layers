@@ -43,8 +43,12 @@ export class Layer {
  *               `{ index, offset, startUtc, durationSec }` incl. fileless ones (a
  *               sidecar provider UTC-aligns against these).
  *  - `layers` — map of `type` → factory `(config, ctx) => Layer`, or
- *               `{ needs: [channel], create }` to declare the channels a layer
- *               reads (validated up-front against the loaded DataSet).
+ *               `{ needs: [channel], needsClock, create }` to declare what a layer
+ *               requires, validated up-front (fail fast before rendering):
+ *               `needs` — data channels that must be present in the DataSet;
+ *               `needsClock: true` — the layer reads the wall clock
+ *               (`frame.dateTime`), so at least one segment must resolve a
+ *               `startUtc` (e.g. the datetime widget).
  *
  * One package can ship both (e.g. provider-gopro: telemetry channels + widgets).
  * The engine takes a single `providers: [...]` array and routes by facet.
@@ -88,8 +92,8 @@ export class Registry {
       }
       const norm =
         typeof reg === 'function'
-          ? { needs: [], create: reg }
-          : { needs: reg.needs ?? [], create: reg.create }
+          ? { needs: [], needsClock: false, create: reg }
+          : { needs: reg.needs ?? [], needsClock: reg.needsClock ?? false, create: reg.create }
       if (typeof norm.create !== 'function') {
         throw new Error(`Layer "${type}" registration needs a create() function`)
       }

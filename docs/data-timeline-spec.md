@@ -110,7 +110,10 @@ accessor `frame.data`:
 | `has(name)` | channel present? ✅ |
 
 Layers declare `needs: [channel]`; the engine fails fast before rendering if a
-need is unmet. ✅
+need is unmet. ✅ A layer that reads the **wall clock** (not a data channel)
+instead declares `needsClock: true` (e.g. the datetime widget) — same fail-fast
+contract: if no segment resolves a `startUtc`, the engine throws up front rather
+than encoding blank `--:--:--`. ✅
 
 ---
 

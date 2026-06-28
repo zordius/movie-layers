@@ -317,9 +317,14 @@ export class Engine {
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {
       const reg = this.registry.get(type)
-      return { type, needs: reg.needs, instance: reg.create(config, ctx) }
+      return { type, needs: reg.needs, needsClock: reg.needsClock, instance: reg.create(config, ctx) }
     })
-    for (const { type, needs } of built) {
+    // A wall clock exists if any segment resolved a startUtc (explicit / GPS /
+    // creation_time). A clock-reading layer (datetime) fails fast when there is
+    // none — better than silently rendering blank dates the user only spots after
+    // the whole encode finishes.
+    const hasWallClock = this.segments.some((s) => s.startUtc != null)
+    for (const { type, needs, needsClock } of built) {
       for (const ch of needs) {
         if (!dataset.has(ch)) {
           throw new Error(
@@ -327,6 +332,13 @@ export class Engine {
               `(available: ${dataset.list().join(', ') || 'none'})`,
           )
         }
+      }
+      if (needsClock && !hasWallClock) {
+        throw new Error(
+          `Layer "${type}" needs a wall clock (frame.dateTime), but no segment resolved one — ` +
+            `set Engine \`startDateTime\` / \`segments[].startUtc\`, use a base video with a usable ` +
+            `\`creation_time\`, or a data provider that derives a GPS clock`,
+        )
       }
     }
     const data = dataset.view()
