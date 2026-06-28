@@ -98,7 +98,8 @@ GPS); `--no-smooth` turns it off. `--help` lists every flag.
 
 The ffmpeg seam, layer/provider model, render loop, and the full data & timeline
 architecture work. See [`docs/data-timeline-spec.md`](docs/data-timeline-spec.md)
-for the design and a per-feature ✅/🔜 breakdown.
+for the design and a per-feature ✅/🔜 breakdown; gauge behaviour (display
+smoothing, derived speed) is in [`docs/dashboard-spec.md`](docs/dashboard-spec.md).
 
 Done:
 
@@ -115,6 +116,11 @@ Done:
       continue-time fill + back-derive + gap detection; channel-merge precedence;
       timezone resolution (explicit > provider > default); `clockOffsetSec`
       manual fix for a wrong camera clock
+- [x] CLI: `movie-layers <video>` → overlay; GoPro auto-dashboard, aspect-aware
+      (ratio-safe) default layout, `--gpx` / `--clock-offset` / `--stabilize` flags
+- [x] Dashboard presentation: per-gauge display smoothing (default-on,
+      `--no-smooth`) + GPS-derived `speed` fallback (when device speed is absent) —
+      see [`docs/dashboard-spec.md`](docs/dashboard-spec.md)
 
 Planned:
 
