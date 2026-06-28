@@ -357,5 +357,5 @@ correcting both sidecar alignment and displayed `dateTime` (§5).
 🔜 Planned: sidecar `.fit` UTC alignment (binary FIT decoder — the `.gpx`
 alignment path is done, §3); `sourceInPoint` (segment trimming);
 provider-private `setup` → shared resources; perf path (`toBuffer('raw')`/bgra,
-DoubleBuffer, GPU profiles); the dashboard presentation layer — display smoothing
-+ derived-`speed` fallback (see [`dashboard-spec.md`](dashboard-spec.md)).
+DoubleBuffer, GPU profiles). (Dashboard presentation layer — display smoothing +
+derived-`speed` — is implemented; see [`dashboard-spec.md`](dashboard-spec.md).)

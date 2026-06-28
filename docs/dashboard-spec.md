@@ -4,8 +4,8 @@ How the dashboard turns telemetry channels into gauge numbers, and how those
 numbers are kept stable. Companion to
 [`data-timeline-spec.md`](data-timeline-spec.md) (the data + timeline layer).
 
-**Status: §2 display smoothing is implemented ✅; §3 derived-`speed` and the
-lib-side source reconstruction remain proposed (🔜).**
+**Status: §2 display smoothing and §3 derived-`speed` fallback are implemented ✅;
+the lib-side source reconstruction (§0/§4) remains proposed (🔜).**
 
 ---
 
@@ -88,35 +88,38 @@ A **presentation-only** smoothing applied by the numeric **scalar** gauges:
 
 ---
 
-## 3. Derived `speed` fallback (provider)
+## 3. Derived `speed` fallback (provider) ✅
 
 When a telemetry source lacks device `speed`, the provider derives **horizontal
 ground speed** from the position track:
 
-- **Trigger = wholly absent only.** Derive **only when the `speed` channel would
-  otherwise be entirely empty** (e.g. after `stabilize`, which drops device speed;
-  or a `.gpx` with no `<speed>`). If a source *has* device speed, keep it — it's the
-  more accurate Doppler reading.
+- **Trigger = wholly absent only.** Derived **only when the `speed` channel is
+  otherwise entirely empty** (e.g. after `stabilize`, which drops device speed; or a
+  `.gpx` with no `<speed>`). If a source *has* device speed, it's kept — the more
+  accurate Doppler reading. (`provider-gopro` computes the derived series per
+  segment, holds it aside, and promotes it only if no segment reported speed.)
 - **Intermittent → freeze, not per-point derive.** If `speed` is present at some
-  points and missing at others, do **nothing special**: the missing points simply
-  aren't added, and data-spec §2 gap-hold / interpolation handles them (the
-  "freeze" route). Derivation is all-or-nothing per source.
-- **How** — `haversine(prev, cur) / Δt` → m/s → ×3.6 km/h, via a **shared helper**
-  next to `gradientSamples` in `src/gradient.js`. As a 1st derivative of position
-  it is noisy → it gets the §2 display smoothing, and may carry a light
-  distance/time baseline like gradient.
+  points and missing at others, nothing special happens: the missing points aren't
+  added, and data-spec §2 gap-hold / interpolation handles them (the "freeze"
+  route). Derivation is all-or-nothing per source.
+- **How** — `speedSamples()` (shared helper in `src/gradient.js`, beside
+  `gradientSamples`): distance over a ~`windowSec`-second **trailing window**
+  (default **1 s**, not adjacent samples) → km/h. The window tames the per-sample
+  noise that differentiating position amplifies; §2 display smoothing then polishes
+  the gauge.
 - Both `provider-gopro` and `provider-gpx` use the same helper.
 
 ---
 
 ## 4. Status
 
-✅ **Implemented:** display smoothing (§2) — critically-damped, presentation-only,
-scalar gauges, Engine `gaugeSmoothing` toggle **default-on** (`--no-smooth` /
-per-widget override); `src/smooth.js`.
+✅ **Implemented:**
 
-🔜 **Proposed:** derived-`speed` fallback (§3) — shared helper, triggered only when
-the `speed` channel is wholly absent.
+- display smoothing (§2) — critically-damped, presentation-only, scalar gauges,
+  Engine `gaugeSmoothing` toggle **default-on** (`--no-smooth` / per-widget
+  override); `src/smooth.js`.
+- derived-`speed` fallback (§3) — `speedSamples` shared helper (1 s window),
+  triggered only when the `speed` channel is wholly absent; gopro + gpx.
 
 Source-axis reconstruction (the upstream this layer sits on, §0) is the
 **gpx-stabilizer** side — its SPEC's *elevation-reconstruction (track smoothing)*

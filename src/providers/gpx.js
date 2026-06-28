@@ -38,7 +38,7 @@
  */
 import { readGpx } from 'gpx-stabilizer'
 
-import { gradientSamples } from '../gradient.js'
+import { gradientSamples, speedSamples } from '../gradient.js'
 
 const finite = (n) => typeof n === 'number' && Number.isFinite(n)
 
@@ -138,6 +138,13 @@ export default function gpx(opts = {}) {
       // for the common N=1 case it is identical.
       for (const s of gradientSamples(placedPts, { windowM: opts.gradeWindowM ?? 20 })) {
         channels.gradient.samples.push(s)
+      }
+
+      // derived-speed fallback (§3): only when the sidecar carried no <speed> at all
+      if (channels.speed.samples.length === 0 && placedPts.length > 1) {
+        for (const s of speedSamples(placedPts, { windowSec: opts.speedWindowSec ?? 1 })) {
+          channels.speed.samples.push(s)
+        }
       }
 
       // drop channels that stayed empty (e.g. a track with no <ele>)

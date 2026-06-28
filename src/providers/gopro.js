@@ -23,7 +23,7 @@
 // of `gpx-stabilizer` core, which is now zero-dep); see its docs/export-contract.md.
 import { readGoproTelemetry } from 'gpx-from-gopro'
 
-import { gradientSamples } from '../gradient.js'
+import { gradientSamples, speedSamples } from '../gradient.js'
 
 const finite = (n) => typeof n === 'number' && Number.isFinite(n)
 
@@ -58,7 +58,7 @@ function goodFixes(points) {
  * (gray pre-display before GPS lock); with the first-fix fallback it lands at the
  * segment start (pre-lock delay unknown, left out).
  */
-function appendSegment(good, anchorUtc, offset, channels, W, minSpan) {
+function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, speedWindowSec) {
   const ts = good.map((p) => offset + (p.time - anchorUtc) / 1000)
   for (let i = 0; i < good.length; i++) {
     const p = good[i]
@@ -67,12 +67,14 @@ function appendSegment(good, anchorUtc, offset, channels, W, minSpan) {
     if (finite(p.ele)) channels.altitude.samples.push({ t: ts[i], value: p.ele })
   }
 
-  // Gradient via the shared helper. Cumulative distance is per-segment (segments
-  // may be spatially disjoint), so call it here — per segment — not across the
-  // whole track. Pass every good point (with its global `t`); the helper skips
+  // Gradient (and a derived-speed fallback) via the shared helpers. Cumulative
+  // distance is per-segment (segments may be spatially disjoint), so call them
+  // here — per segment — not across the whole track. The gradient helper skips
   // non-finite `ele` in the output but still counts it toward distance.
   const pts = good.map((p, i) => ({ lat: p.lat, lon: p.lon, ele: p.ele, t: ts[i] }))
   for (const s of gradientSamples(pts, { windowM: W, minSpan })) channels.gradient.samples.push(s)
+  // derived speed is held aside; only used if the device reported none anywhere (below)
+  for (const s of speedSamples(pts, { windowSec: speedWindowSec })) dspeed.push(s)
 }
 
 /**
@@ -125,6 +127,8 @@ export default function gopro(opts = {}) {
         gradient: { unit: '%', maxGap, samples: [] },
       }
       const clocks = [] // per-segment GPS wall-clock candidates (§5)
+      const dspeed = [] // GPS-derived speed, used only if the device reported none (dashboard-spec §3)
+      const speedWindowSec = opts.speedWindowSec ?? 1
       let timezone = null
 
       for (const target of targets) {
@@ -140,9 +144,14 @@ export default function gopro(opts = {}) {
         // available, else this segment's own first fix (good[0]).
         const verified = res.clock?.verified === true
         const anchor = verified && finite(res.startUtc) ? res.startUtc : good[0].time
-        appendSegment(good, anchor, target.offset, channels, W, minSpan)
+        appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec)
         clocks.push({ sourceIndex: target.sourceIndex, startUtc: anchor, confidence: 'gps', verified })
       }
+
+      // derived-speed fallback (§3): use it only when the device reported NO speed
+      // anywhere (e.g. after stabilize). Intermittent device speed stays device-only
+      // (the gaps are handled by maxGap hold, not per-point derivation).
+      if (channels.speed.samples.length === 0 && dspeed.length) channels.speed.samples = dspeed
 
       // drop channels that stayed empty (e.g. no altitude anywhere)
       const out = {}

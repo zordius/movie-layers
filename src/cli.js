@@ -134,7 +134,8 @@ async function main() {
     // default = STABILIZE_READY (intended on, temporarily off); flags override
     const stabilize = args.stabilize ? true : args.noStabilize ? false : STABILIZE_READY
     dataProvider = gopro(stabilize ? { stabilize: true } : {})
-    if (stabilize) hasSpeed = false // stabilize reduces points to lat/lon/ele/time (drops speed)
+    // stabilize drops device speed, but provider-gopro now derives it from GPS
+    // (dashboard-spec §3), so the speed gauge stays — no need to omit it.
   } else {
     console.error(
       `error: no embedded GPS in ${input} and no --gpx given — nothing to overlay.\n` +
