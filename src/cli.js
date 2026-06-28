@@ -43,6 +43,7 @@ options:
   --snapshot            render one preview PNG instead of a video
   --at SEC              snapshot time in seconds (default: the middle of the clip)
   --open                open the output when done (in the default viewer)
+  -q, --quiet           silence the staged log / progress (errors still print)
   --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
   --fps N               output framerate (default 30)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
@@ -67,6 +68,7 @@ function parseArgs(argv) {
     else if (t === '--no-smooth') a.noSmooth = true
     else if (t === '--snapshot') a.snapshot = true
     else if (t === '--open') a.open = true
+    else if (t === '--quiet' || t === '-q') a.quiet = true
     else if (t === '--stabilize') a.stabilize = true
     else if (t === '--no-stabilize') a.noStabilize = true
     else if (t.startsWith('--')) a[t.slice(2)] = argv[++i] // flag takes the next token
@@ -173,6 +175,7 @@ async function main() {
   const fps = args.fps ? Number(args.fps) : 30
   const baseline = args.baseline ? Number(args.baseline) : 1080
   const withDatetime = !args.noDatetime
+  const log = args.quiet ? () => {} : (...a) => console.log(...a) // --quiet silences stdout info/progress
 
   // ── Stage 1: inputs + probe ──────────────────────────────────────────────────
   // probe the FIRST clip (concat needs equal dimensions, so it's representative)
@@ -190,22 +193,22 @@ async function main() {
   }
   const label = files.length > 1 ? `${files.length} clips` : basename(input)
   const dims = info?.width ? `${info.width}x${info.height}` : '?'
-  console.log(`movie-layers: ${label}, ${dims}${info?.fps ? ` @ ${info.fps.toFixed(2)}fps` : ''}`)
+  log(`movie-layers: ${label}, ${dims}${info?.fps ? ` @ ${info.fps.toFixed(2)}fps` : ''}`)
 
   // choose the data provider: --gpx sidecar > embedded GoPro GPS > none (pass-through)
   let dataProvider = null
   const hasSpeed = true
   if (args.gpx) {
     dataProvider = gpx({ file: args.gpx })
-    console.log(`  source: sidecar gpx ${args.gpx}`)
+    log(`  source: sidecar gpx ${args.gpx}`)
   } else if (hasGps) {
     const stabilize = args.stabilize ? true : args.noStabilize ? false : STABILIZE_READY
     dataProvider = gopro(stabilize ? { stabilize: true } : {})
-    console.log(`  source: embedded GoPro GPS${stabilize ? ' (stabilized)' : ''}`)
+    log(`  source: embedded GoPro GPS${stabilize ? ' (stabilized)' : ''}`)
   } else {
     // pass-through: no telemetry → just stitch/encode the footage (datetime if a clock exists)
     const minimal = withDatetime && info?.creationTime != null ? 'datetime only' : 'no overlay (stitch only)'
-    console.log(`  source: no GPS — telemetry widgets off; ${minimal}`)
+    log(`  source: no GPS — telemetry widgets off; ${minimal}`)
   }
 
   // providers + layout (full dashboard with data; datetime-or-nothing without)
@@ -232,32 +235,33 @@ async function main() {
   const { scene, summary } = await engine.prepare()
   if (summary.clock?.startUtc != null) {
     const c = summary.clock
-    console.log(
+    log(
       `  clock: ${new Date(c.startUtc).toISOString()} (${c.confidence}${c.verified ? ', verified' : ''})` +
         `${summary.timezone ? `, tz ${summary.timezone}` : ''}`,
     )
   }
   for (const [name, ch] of Object.entries(summary.channels)) {
     const range = ch.min != null && ch.max != null ? `  ${ch.min.toFixed(1)}–${ch.max.toFixed(1)} ${ch.unit}` : ''
-    console.log(`  ${name}: ${ch.count} samples${range}`)
+    log(`  ${name}: ${ch.count} samples${range}`)
   }
 
   // ── Stage 2: render plan ─────────────────────────────────────────────────────
-  console.log(`widgets: ${summary.layers.join(' · ') || '(none — stitch only)'}`)
+  log(`widgets: ${summary.layers.join(' · ') || '(none — stitch only)'}`)
 
   // ── Stage 3: do it ───────────────────────────────────────────────────────────
-  const logCmd = (cmd) => console.log(`  $ ${cmd.join(' ')}`)
+  const logCmd = (cmd) => log(`  $ ${cmd.join(' ')}`)
   const t0 = Date.now()
   if (args.snapshot) {
     const at = args.at != null ? Number(args.at) : null
-    console.log(`snapshot @ ${at != null ? `${at}s` : 'middle'} → ${out}`)
+    log(`snapshot @ ${at != null ? `${at}s` : 'middle'} → ${out}`)
     await engine.snapshot({ atSec: at, output: out, scene, onCommand: logCmd })
   } else if (summary.layers.length === 0) {
     // no overlay → lossless stream-copy stitch (one ffmpeg call, no per-frame work)
-    console.log(`stitching → ${out}`)
+    if (args.fps) console.warn(`note: --fps ${fps} ignored — a pure stitch is a stream copy (no re-encode)`)
+    log(`stitching → ${out}`)
     await engine.render({ scene, onCommand: logCmd })
   } else {
-    console.log(`rendering → ${out}  (${summary.frameCount} frames @ ${fps}fps)`)
+    log(`rendering → ${out}  (${summary.frameCount} frames @ ${fps}fps)`)
     const tty = process.stdout.isTTY
     let pct = -1
     let shown = -1
@@ -265,6 +269,7 @@ async function main() {
       scene,
       onCommand: logCmd,
       onProgress: (i, n) => {
+        if (args.quiet) return
         const p = Math.floor((i / n) * 100)
         if (p === pct) return
         pct = p
@@ -275,21 +280,21 @@ async function main() {
           process.stdout.write(`\r  ${line}    `) // one updating line in a terminal
         } else if (p % 10 === 0 && p !== shown) {
           shown = p // non-TTY (pipe / CI / file): plain lines at 10% steps, no \r garble
-          console.log(`  ${line}`)
+          log(`  ${line}`)
         }
       },
     })
-    if (tty) process.stdout.write('\n')
+    if (tty && !args.quiet) process.stdout.write('\n')
   }
 
   // ── Stage 4: done ────────────────────────────────────────────────────────────
-  console.log(`done: ${out}  (${summary.durationSec.toFixed(1)}s, ${dims})  in ${fmtDur((Date.now() - t0) / 1000)}`)
+  log(`done: ${out}  (${summary.durationSec.toFixed(1)}s, ${dims})  in ${fmtDur((Date.now() - t0) / 1000)}`)
   const c = summary.channels
   const bits = []
   if (c.speed?.max != null) bits.push(`speed ≤ ${c.speed.max.toFixed(1)} ${c.speed.unit}`)
   if (c.altitude?.min != null) bits.push(`alt ${c.altitude.min.toFixed(0)}–${c.altitude.max.toFixed(0)} ${c.altitude.unit}`)
   if (c.gradient?.min != null) bits.push(`grade ${c.gradient.min.toFixed(0)}–${c.gradient.max.toFixed(0)} ${c.gradient.unit}`)
-  if (bits.length) console.log(`  ${bits.join(', ')}`)
+  if (bits.length) log(`  ${bits.join(', ')}`)
 
   if (args.open) openFile(out)
 }
