@@ -29,14 +29,14 @@ const STABILIZE_READY = false
 const USAGE = `movie-layers — render a telemetry overlay onto a video
 
 usage:
-  movie-layers <video> [options]
+  movie-layers <video> [<video> ...] [options]
 
 options:
-  --out FILE            output path (default: <video>-overlay.mp4, same dir)
+  --out FILE            output path (default: <first-video>-overlay.mp4, same dir)
   --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
   --fps N               output framerate (default 30)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
-  --stabilize           clean the GPS noise first (gpx-stabilizer); drops the speed gauge
+  --stabilize           clean GPS noise first (gpx-stabilizer); speed is derived from GPS
   --no-stabilize        force raw GPS (stabilize default is currently off; see code)
   --no-datetime         omit the date/time readout
   --no-smooth           disable gauge value smoothing (on by default)
@@ -44,7 +44,9 @@ options:
   -h, --help            this help
 
 A GoPro clip is detected by its embedded GPS (gpmd) and gets the full dashboard
-(track · speed · latlon · altitude · gradient · datetime) automatically.`
+(track · speed · latlon · altitude · gradient · datetime) automatically. Pass
+several clips (same resolution / fps — parts of one trip) to concat them into a
+single timeline; their telemetry is offset-merged across the join.`
 
 function parseArgs(argv) {
   const a = { _: [] }
@@ -105,14 +107,16 @@ async function main() {
     process.exit(args.help ? 0 : 1)
   }
 
-  const input = args._[0]
+  const files = args._ // one or more clips, concatenated in order
+  const input = files[0] // first clip drives naming / probing
   const out =
     args.out ?? join(dirname(input), `${basename(input, extname(input))}-overlay.mp4`)
   const fps = args.fps ? Number(args.fps) : 30
   const baseline = args.baseline ? Number(args.baseline) : 1080
   const withDatetime = !args.noDatetime
 
-  // probe: GoPro telemetry present? + geometry (for the responsive layout)
+  // probe the FIRST clip: GoPro telemetry present? + geometry (for the responsive
+  // layout). Concat requires identical dimensions, so the first is representative.
   const src = new Source(input)
   let hasGps = false
   let logicalW = baseline * (16 / 9) // fallback aspect if the probe can't size it
@@ -145,7 +149,8 @@ async function main() {
   }
 
   const engine = new Engine({
-    baseVideo: input,
+    // 1 clip → baseVideo; many → segments (ffmpeg concat over one logical timeline)
+    ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
     fps,
     scaleBaseline: baseline, // <-- ratio fix: normalize gadget positions to a 1080 logical space
     clockOffsetSec: args['clock-offset'] ? Number(args['clock-offset']) : 0,
@@ -155,7 +160,9 @@ async function main() {
     output: out,
   })
 
-  console.log(`rendering ${basename(input)} -> ${out}${args.gpx ? ` (gpx: ${args.gpx})` : hasGps ? ' (GoPro GPS)' : ''}`)
+  const what = args.gpx ? ` (gpx: ${args.gpx})` : hasGps ? ' (GoPro GPS)' : ''
+  const src_ = files.length > 1 ? `${files.length} clips` : basename(input)
+  console.log(`rendering ${src_} -> ${out}${what}`)
   await engine.render()
   console.log(`done: ${out}`)
 }
