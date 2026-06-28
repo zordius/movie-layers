@@ -28,20 +28,21 @@ import { gradientSamples, speedSamples } from '../gradient.js'
 const finite = (n) => typeof n === 'number' && Number.isFinite(n)
 
 /**
- * Usable GPS fixes from a raw point list. Raw points carry `fix`; stabilized ones
- * don't (stabilize reduces a point to {lat,lon,ele,time}). Filter to a real lock
- * (3d/2d) when `fix` is present; otherwise trust stabilize to have dropped bad
- * samples. Requires finite lat/lon/time.
+ * Usable GPS fixes from a raw point list. Filter to a real lock (3d/2d) only when
+ * the track actually HAS any — a clip that reports `fix:'none'` on every sample
+ * (seen on some GPS5/Hero5 firmware) but carries valid coords is kept rather than
+ * dropped to nothing (its GPS clock is then unverified). Stabilized points carry no
+ * `fix` at all, so they're kept too. Requires finite lat/lon/time.
  */
 function goodFixes(points) {
-  const hasFix = points.some((p) => p && p.fix)
+  const hasGoodFix = points.some((p) => p && (p.fix === '3d' || p.fix === '2d'))
   return points.filter(
     (p) =>
       p &&
       finite(p.lat) &&
       finite(p.lon) &&
       finite(p.time) &&
-      (!hasFix || p.fix === '3d' || p.fix === '2d'),
+      (!hasGoodFix || p.fix === '3d' || p.fix === '2d'),
   )
 }
 
