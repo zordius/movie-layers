@@ -51,6 +51,7 @@ options:
   --no-stabilize        force raw GPS (stabilize default is currently off; see code)
   --no-datetime         omit the date/time readout
   --no-smooth           disable gauge value smoothing (on by default)
+  --flip                swap the bottom corners — gauges right, track map left
   --baseline N          logical baseline height for gadget scaling (default 1080)
   -h, --help            this help
 
@@ -68,6 +69,7 @@ function parseArgs(argv) {
     else if (t === '--no-smooth') a.noSmooth = true
     else if (t === '--snapshot') a.snapshot = true
     else if (t === '--open') a.open = true
+    else if (t === '--flip') a.flip = true
     else if (t === '--quiet' || t === '-q') a.quiet = true
     else if (t === '--stabilize') a.stabilize = true
     else if (t === '--no-stabilize') a.noStabilize = true
@@ -126,33 +128,38 @@ export function expandInputs(inputs) {
  * @param {{hasSpeed:boolean, withDatetime:boolean, logicalW:number}} o
  *   logicalW = baseline × (videoWidth / videoHeight) — the logical canvas width.
  */
-export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920 }) {
+export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = false }) {
   const M = 5 // edge margin (logical px) — hug the corners
   const row = 997 // bottom-row top: panel height ≈ 78 → its bottom sits ~M from 1080
-  const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~x5..671
-  // the track map is the big, glanceable widget → bottom-RIGHT corner, keeping the
-  // data-dense gauges + datetime in the top-left→bottom-left priority zone. Right-
-  // anchored via logicalW (clamped for a very narrow canvas).
+  const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~666 px wide
   const trackW = 170
   const trackH = 360
-  const layout = [
-    { type: 'track', x: Math.max(M, logicalW - trackW - M), y: 1080 - trackH - M, width: trackW, height: trackH },
-  ]
+  const ROW_W = 666 // latlon→gradient span (276 +5+180 +5+200)
+  const GAUGE_W = 276 // widest single gauge (latlon), for the stacked column
+
+  // gauges hug one bottom corner (data-dense, the priority zone), the big track map
+  // the other. Default = gauges left / map right; `--flip` swaps them for footage
+  // whose subject sits on the other side. datetime stays top-left (small).
+  const gaugesRight = flip
+  const trackX = gaugesRight ? M : Math.max(M, logicalW - trackW - M)
+  const layout = [{ type: 'track', x: trackX, y: 1080 - trackH - M, width: trackW, height: trackH }]
 
   if (logicalW >= ROW_MIN) {
-    // landscape: gauges along the bottom edge, speed just above the row on the left
-    if (hasSpeed) layout.push({ type: 'speed', x: M, y: 914 })
-    let x = M
+    // landscape: gauges along the bottom edge, speed just above the row
+    const base = gaugesRight ? Math.max(M, logicalW - M - ROW_W) : M
+    if (hasSpeed) layout.push({ type: 'speed', x: base, y: 914 })
+    let x = base
     layout.push({ type: 'latlon', x, y: row, windowSec: 4 })
     x += 281 // latlon panel (276) + M
     layout.push({ type: 'altitude', x, y: row })
     x += 185 // altitude panel (180) + M
     layout.push({ type: 'gradient', x, y: row })
   } else {
-    // portrait / narrow: stack the gauges bottom-up along the left edge
+    // portrait / narrow: stack the gauges bottom-up the chosen edge
+    const base = gaugesRight ? Math.max(M, logicalW - M - GAUGE_W) : M
     let y = row
     for (const type of ['gradient', 'altitude', 'latlon', ...(hasSpeed ? ['speed'] : [])]) {
-      layout.push(type === 'latlon' ? { type, x: M, y, windowSec: 4 } : { type, x: M, y })
+      layout.push(type === 'latlon' ? { type, x: base, y, windowSec: 4 } : { type, x: base, y })
       y -= 90
     }
   }
@@ -220,7 +227,7 @@ async function main() {
   // providers + layout (full dashboard with data; datetime-or-nothing without)
   const providers = dataProvider ? [dataProvider, dashboard, datetime] : [datetime]
   const layout = dataProvider
-    ? defaultLayout({ hasSpeed, withDatetime, logicalW })
+    ? defaultLayout({ hasSpeed, withDatetime, logicalW, flip: args.flip })
     : withDatetime && info?.creationTime != null
       ? [{ type: 'datetime' }]
       : []
