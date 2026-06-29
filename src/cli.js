@@ -15,7 +15,7 @@
 // `scaleBaseline` normalizes it, so the gadgets sit correctly at any resolution /
 // aspect ratio (2.7K, 4K, 4:3, …), not just 1080p.
 import { spawn } from 'node:child_process'
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -304,8 +304,17 @@ async function main() {
   if (args.open) openFile(out)
 }
 
-// run only as the CLI entry, so the module can be imported (e.g. for tests)
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// run only as the CLI entry, so the module can be imported (e.g. for tests).
+// realpath BOTH sides: a symlinked bin (npm link / mise shim) makes argv[1] the
+// symlink path while import.meta.url is the resolved file — compare resolved.
+const real = (p) => {
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
+  }
+}
+if (process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url))) {
   main().catch((e) => {
     console.error(`error: ${e.message}`)
     process.exit(1)
