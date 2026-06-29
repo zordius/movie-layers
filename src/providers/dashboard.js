@@ -152,19 +152,14 @@ function headingRad(series, t, win) {
 }
 
 // fixed zoom for a moving window (computed once → consistent density, only pans)
-function reticleScale(series, R, windowSec) {
+// Fixed-zoom inset projection: `mppPx` screen pixels per ground metre (constant — no
+// longer a function of speed/window). Returns px-per-° latitude `scale` and the
+// longitude isotropy factor `kx` (at the track's median latitude).
+function reticleScale(series, mppPx) {
   const pts = series.filter((s) => s.value && s.value.lat != null)
   if (pts.length < 2) return null
   const kx = Math.cos((pts[pts.length >> 1].value.lat * Math.PI) / 180)
-  const steps = []
-  const dts = []
-  for (let i = 1; i < pts.length; i++) {
-    steps.push(Math.hypot((pts[i].value.lon - pts[i - 1].value.lon) * kx, pts[i].value.lat - pts[i - 1].value.lat))
-    dts.push(pts[i].t - pts[i - 1].t)
-  }
-  const median = (arr) => [...arr].sort((p, q) => p - q)[arr.length >> 1]
-  const halfSpan = Math.max((median(steps) || 1e-5) * (windowSec / (median(dts) || 1)), 2.5e-4)
-  return { scale: R / halfSpan, kx }
+  return { scale: mppPx * 111320, kx } // px/° lat = mppPx px/m × 111320 m/°
 }
 
 // moving-window mini-map: whole track gray + travelled green, centred on the current
@@ -183,20 +178,25 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
     ctx.beginPath()
     ctx.arc(cx, cy, R, 0, Math.PI * 2)
     ctx.clip()
-    // fixed 1 m × 1 m grid inside the window, centred on the dot (may get dense when
-    // the window is zoomed out — revisit the density rule later if needed)
-    const ppm = scale / 111320
-    if (ppm > 0.5 && Number.isFinite(ppm)) {
-      const gpx = ppm // 1 m
-      const n = Math.ceil(R / gpx)
+    // 1 m × 1 m grid anchored to integer-metre ground coordinates (not the dot), so it
+    // slides under the moving centre as the rider travels. Fixed zoom (1 m = 10 px).
+    const mpp = scale / 111320 // px per metre
+    if (Number.isFinite(mpp) && mpp > 0) {
+      const spanM = R / mpp // metres from centre to ring
+      const e0 = g.lon * kx * 111320 // current easting, metres
+      const n0 = g.lat * 111320 // current northing, metres
       ctx.strokeStyle = GRID
       ctx.lineWidth = 1
       ctx.beginPath()
-      for (let k = -n; k <= n; k++) {
-        ctx.moveTo(cx + k * gpx, cy - R)
-        ctx.lineTo(cx + k * gpx, cy + R)
-        ctx.moveTo(cx - R, cy + k * gpx)
-        ctx.lineTo(cx + R, cy + k * gpx)
+      for (let e = Math.ceil(e0 - spanM); e <= e0 + spanM; e++) {
+        const x = cx + (e - e0) * mpp
+        ctx.moveTo(x, cy - R)
+        ctx.lineTo(x, cy + R)
+      }
+      for (let nm = Math.ceil(n0 - spanM); nm <= n0 + spanM; nm++) {
+        const y = cy - (nm - n0) * mpp
+        ctx.moveTo(cx - R, y)
+        ctx.lineTo(cx + R, y)
       }
       ctx.stroke()
     }
@@ -441,20 +441,17 @@ class Gradient extends Layer {
       const cur = scalarAt(alt, f.timeSec) ?? 0
       const N = bw
       const ys = []
-      let dev = 0.5 // metres; min so a flat window doesn't divide by ~0
-      for (let i = 0; i <= N; i++) {
-        const a = scalarAt(alt, f.timeSec - half + (i / N) * 2 * half)
-        ys.push(a)
-        if (a != null) dev = Math.max(dev, Math.abs(a - cur))
-      }
-      const vs = (bh / 2 - 4) / dev
+      for (let i = 0; i <= N; i++) ys.push(scalarAt(alt, f.timeSec - half + (i / N) * 2 * half))
+      const vs = 4 // fixed scale: 1 m = 4 px (no dynamic zoom)
       ctx.save()
       ctx.beginPath()
       ctx.rect(bx, by, bw, bh)
       ctx.clip()
-      // solid blue (altitude colour), filled up from the bottom of the block
-      ctx.fillStyle = BLUE
+      // solid blue (altitude colour), filled up from the bottom of the block. Build
+      // the whole filled region as ONE path so it can double as the clip for the
+      // gridlines (which must show only inside the blue).
       const bottom = by + bh
+      ctx.beginPath()
       let i = 0
       while (i <= N) {
         if (ys[i] == null) {
@@ -462,7 +459,6 @@ class Gradient extends Layer {
           continue
         }
         const start = i
-        ctx.beginPath()
         ctx.moveTo(bx + (start / N) * bw, bottom)
         let last = start
         while (i <= N && ys[i] != null) {
@@ -472,8 +468,21 @@ class Gradient extends Layer {
         }
         ctx.lineTo(bx + (last / N) * bw, bottom)
         ctx.closePath()
-        ctx.fill()
       }
+      ctx.fillStyle = BLUE
+      ctx.fill()
+      // 2 m horizontal gridlines, snapped to integer 2 m, clipped to the blue region
+      ctx.clip()
+      ctx.strokeStyle = GRID
+      ctx.lineWidth = 1
+      const span = bh / 2 / vs // metres visible each side of centre
+      ctx.beginPath()
+      for (let m = Math.ceil((cur - span) / 2) * 2; m <= cur + span; m += 2) {
+        const py = ccy - (m - cur) * vs // no pixel-snap: must glide in sync with the fill
+        ctx.moveTo(bx, py)
+        ctx.lineTo(bx + bw, py)
+      }
+      ctx.stroke()
       ctx.restore()
     }
 
@@ -517,7 +526,6 @@ class Track extends Layer {
     this.h = c.height ?? 360
     this.grid = c.grid ?? true // semi-transparent panel + metric grid behind the track
     this.inset = c.inset ?? true // moving-window mini-map in the top-left corner
-    this.windowSec = c.windowSec ?? 10 // ± seconds of travel visible in that inset
     this._ret = undefined // cached inset zoom (computed once)
   }
   _project(series) {
@@ -615,10 +623,10 @@ class Track extends Layer {
 
     // moving-window inset (zoomed, current-position-centred) in the top-left corner
     if (this.inset) {
-      const R = Math.round(Math.min(this.w, this.h) * 0.18) // ~18% of the box
+      const R = Math.round(Math.min(this.w, this.h) * 0.153) // ~15% of the box (85% of the old 18%)
       const icx = this.x + R + 10
       const icy = this.y + R + 10
-      if (this._ret === undefined) this._ret = reticleScale(series, R, this.windowSec)
+      if (this._ret === undefined) this._ret = reticleScale(series, 10) // fixed 1 m = 10 px
       drawMovingWindow(ctx, icx, icy, R, series, f, cs, this._ret)
     }
   }
