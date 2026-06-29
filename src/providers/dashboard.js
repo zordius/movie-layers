@@ -452,22 +452,28 @@ class Gradient extends Layer {
       ctx.beginPath()
       ctx.rect(bx, by, bw, bh)
       ctx.clip()
-      ctx.strokeStyle = GRAY
-      ctx.lineWidth = 2
-      ctx.lineJoin = 'round'
-      ctx.lineCap = 'round'
-      ctx.beginPath()
-      let on = false
-      for (let i = 0; i <= N; i++) {
+      // solid blue (altitude colour), filled up from the bottom of the block
+      ctx.fillStyle = BLUE
+      const bottom = by + bh
+      let i = 0
+      while (i <= N) {
         if (ys[i] == null) {
-          on = false
+          i++
           continue
         }
-        const px = bx + (i / N) * bw
-        const py = ccy - (ys[i] - cur) * vs
-        on ? ctx.lineTo(px, py) : (ctx.moveTo(px, py), (on = true))
+        const start = i
+        ctx.beginPath()
+        ctx.moveTo(bx + (start / N) * bw, bottom)
+        let last = start
+        while (i <= N && ys[i] != null) {
+          ctx.lineTo(bx + (i / N) * bw, ccy - (ys[i] - cur) * vs)
+          last = i
+          i++
+        }
+        ctx.lineTo(bx + (last / N) * bw, bottom)
+        ctx.closePath()
+        ctx.fill()
       }
-      ctx.stroke()
       ctx.restore()
     }
 
@@ -484,8 +490,8 @@ class Gradient extends Layer {
     ctx.moveTo(ccx - L * dx, ccy - L * dy)
     ctx.lineTo(ccx + L * dx, ccy + L * dy)
     ctx.stroke()
-    // centre dot = current altitude
-    ctx.fillStyle = sgr.valid ? CYAN : GRAY
+    // centre dot = current altitude (green, altitude colour)
+    ctx.fillStyle = sgr.valid ? ACCENT : GRAY
     ctx.beginPath()
     ctx.arc(ccx, ccy, 3, 0, Math.PI * 2)
     ctx.fill()
