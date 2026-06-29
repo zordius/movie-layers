@@ -20,6 +20,7 @@ const BLUE = '#1e6fd0' // altitude bar remainder
 const PANEL = 'rgba(16,20,24,0.5)'
 const WHITE = '#ffffff'
 const GRAY = '#8a929b' // provisional value (pre-fix / no signal) — dimmed
+const GRID = 'rgba(255,255,255,0.15)' // track-map grid lines
 const FONT = 'sans-serif'
 const MONO = 'Menlo, monospace' // fixed-width for numeric values (no jitter)
 const H = 78 // unified panel height across widgets
@@ -27,6 +28,19 @@ const H = 78 // unified panel height across widgets
 function panel(ctx, x, y, w, h) {
   ctx.fillStyle = PANEL
   ctx.fillRect(x, y, w, h)
+}
+
+// round up to a "nice" 1/2/5 × 10ⁿ value (for a readable metric grid step)
+function nice125(x) {
+  const p = 10 ** Math.floor(Math.log10(x))
+  const f = x / p
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p
+}
+// metric label: 50cm / 2m / 1km
+function fmtMeters(m) {
+  if (m >= 1000) return `${+(m / 1000).toFixed(1)}km`
+  if (m >= 1) return `${+m.toFixed(0)}m`
+  return `${Math.round(m * 100)}cm`
 }
 
 // degrees → N37° 37' 26.1"
@@ -319,6 +333,7 @@ class Track extends Layer {
     this.y = c.y ?? 40
     this.w = c.width ?? 160
     this.h = c.height ?? 320
+    this.grid = c.grid ?? true // semi-transparent panel + metric grid behind the track
   }
   _project(series) {
     const pts = series.map((s) => s.value).filter((v) => v && v.lat != null)
@@ -338,13 +353,49 @@ class Track extends Layer {
     const drawH = spanLat * sc
     const offx = this.x + (this.w - drawW) / 2
     const offy = this.y + (this.h - drawH) / 2
-    return (lat, lon) => [offx + (lon - minLon) * kx * sc, offy + drawH - (lat - minLat) * sc]
+    const project = (lat, lon) => [offx + (lon - minLon) * kx * sc, offy + drawH - (lat - minLat) * sc]
+    // `sc` is px per ° of latitude; the kx factor makes longitude isotropic, so px/metre
+    // is the same on both axes: 1° lat ≈ 111320 m. (offx, offy+drawH) is world (0,0).
+    return { project, ppm: sc / 111320, offx, offy, drawW, drawH }
   }
   draw(ctx, f) {
     const series = f.data.series('gps')
     if (!series || series.length < 2) return
-    const proj = this._project(series)
-    if (!proj) return
+    const p = this._project(series)
+    if (!p) return
+    const { project, ppm, offx, offy, drawH } = p
+
+    // semi-transparent panel + metric grid (cell = a nice 1/2/5 m value whose on-screen
+    // step is ≥ 40 px), behind the track
+    if (this.grid) {
+      panel(ctx, this.x, this.y, this.w, this.h)
+      if (ppm > 0 && Number.isFinite(ppm)) {
+        const cell = nice125(40 / ppm) // metres
+        const gpx = cell * ppm // ≥ 40 px
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(this.x, this.y, this.w, this.h)
+        ctx.clip()
+        ctx.strokeStyle = GRID
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        for (let gx = offx - Math.floor((offx - this.x) / gpx) * gpx; gx <= this.x + this.w; gx += gpx) {
+          ctx.moveTo(gx, this.y)
+          ctx.lineTo(gx, this.y + this.h)
+        }
+        const baseY = offy + drawH // world north = 0
+        for (let gy = baseY - Math.floor((baseY - this.y) / gpx) * gpx; gy <= this.y + this.h; gy += gpx) {
+          ctx.moveTo(this.x, gy)
+          ctx.lineTo(this.x + this.w, gy)
+        }
+        ctx.stroke()
+        ctx.restore()
+        ctx.fillStyle = GRAY
+        ctx.font = `600 14px ${MONO}`
+        ctx.textBaseline = 'alphabetic'
+        ctx.fillText(fmtMeters(cell), this.x + 6, this.y + this.h - 6)
+      }
+    }
 
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
@@ -356,7 +407,7 @@ class Track extends Layer {
       series.forEach((s, i) => {
         const v = s.value
         if (!v || v.lat == null) return
-        const [px, py] = proj(v.lat, v.lon)
+        const [px, py] = project(v.lat, v.lon)
         if (i === 0) ctx.moveTo(px, py)
         else ctx.lineTo(px, py)
       })
@@ -366,7 +417,7 @@ class Track extends Layer {
     const cs = f.data.sample('gps')
     const cur = cs.value
     if (cur && cur.lat != null) {
-      const [px, py] = proj(cur.lat, cur.lon)
+      const [px, py] = project(cur.lat, cur.lon)
       ctx.fillStyle = 'rgba(0,0,0,0.6)'
       ctx.beginPath()
       ctx.arc(px, py, 8, 0, Math.PI * 2)
