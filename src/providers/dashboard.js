@@ -177,6 +177,22 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
     ctx.beginPath()
     ctx.arc(cx, cy, R, 0, Math.PI * 2)
     ctx.clip()
+    // metric grid inside the window (cell = nice 1/2/5 m, ≥40px step), centred on the dot
+    const ppm = scale / 111320
+    if (ppm > 0 && Number.isFinite(ppm)) {
+      const gpx = nice125(40 / ppm) * ppm
+      const n = Math.ceil(R / gpx)
+      ctx.strokeStyle = GRID
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      for (let k = -n; k <= n; k++) {
+        ctx.moveTo(cx + k * gpx, cy - R)
+        ctx.lineTo(cx + k * gpx, cy + R)
+        ctx.moveTo(cx - R, cy + k * gpx)
+        ctx.lineTo(cx + R, cy + k * gpx)
+      }
+      ctx.stroke()
+    }
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
     ctx.lineWidth = 3
@@ -199,7 +215,7 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
     if (on) ctx.lineTo(cx, cy)
     ctx.stroke()
     ctx.restore()
-    ctx.strokeStyle = ACCENT
+    ctx.strokeStyle = CYAN // ring + ticks in the SPEED label colour
     ctx.lineWidth = 2.5
     ctx.beginPath()
     ctx.arc(cx, cy, R, 0, Math.PI * 2)
