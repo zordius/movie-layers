@@ -99,19 +99,6 @@ function crosshairIcon(ctx, cx, cy, r, color) {
   ctx.arc(cx, cy, 2.5, 0, Math.PI * 2)
   ctx.fill()
 }
-function slopeIcon(ctx, x, y, s, color) {
-  ctx.strokeStyle = color
-  ctx.lineWidth = 3
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
-  ctx.beginPath()
-  ctx.moveTo(x, y + s)
-  ctx.lineTo(x + s, y + s)
-  ctx.lineTo(x + s, y)
-  ctx.closePath()
-  ctx.stroke()
-}
-
 // interpolate a gps {lat,lon} from a t-sorted series at time `t` (binary search + lerp)
 function gpsAt(series, t) {
   const p = series
@@ -130,6 +117,25 @@ function gpsAt(series, t) {
   if (!a || !b) return a || b
   const f = p[hi].t - p[lo].t ? (t - p[lo].t) / (p[hi].t - p[lo].t) : 0
   return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f }
+}
+
+// interpolate a numeric channel value from its t-sorted series at time `t`
+function scalarAt(series, t) {
+  const p = series
+  if (!p.length) return null
+  if (t <= p[0].t) return p[0].value
+  if (t >= p[p.length - 1].t) return p[p.length - 1].value
+  let lo = 0
+  let hi = p.length - 1
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1
+    if (p[m].t <= t) lo = m
+    else hi = m
+  }
+  const a = p[lo]
+  const b = p[hi]
+  const f = b.t - a.t ? (t - a.t) / (b.t - a.t) : 0
+  return a.value + (b.value - a.value) * f
 }
 
 // compass bearing (radians; 0 = N, + = clockwise/E) of travel over the last `win`
@@ -177,10 +183,11 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
     ctx.beginPath()
     ctx.arc(cx, cy, R, 0, Math.PI * 2)
     ctx.clip()
-    // metric grid inside the window (cell = nice 1/2/5 m, ≥40px step), centred on the dot
+    // fixed 1 m × 1 m grid inside the window, centred on the dot (may get dense when
+    // the window is zoomed out — revisit the density rule later if needed)
     const ppm = scale / 111320
-    if (ppm > 0 && Number.isFinite(ppm)) {
-      const gpx = nice125(40 / ppm) * ppm
+    if (ppm > 0.5 && Number.isFinite(ppm)) {
+      const gpx = ppm // 1 m
       const n = Math.ceil(R / gpx)
       ctx.strokeStyle = GRID
       ctx.lineWidth = 1
@@ -416,9 +423,74 @@ class Gradient extends Layer {
     const w = 200
     const h = H
     panel(ctx, x, y, w, h)
-    slopeIcon(ctx, x + 22, y + 24, 26, ACCENT)
     const sgr = f.data.sample('gradient')
-    const g = shown(this, sgr, f.dt) ?? 0
+    const g = shown(this, sgr, f.dt) ?? 0 // smoothed gradient → the number + the slope-line angle
+
+    // altitude mini-profile: a ±10 s window, vertically centred on the current altitude
+    const bx = x + 12
+    const by = y + 12
+    const bw = 50
+    const bh = h - 24
+    const ccx = bx + bw / 2
+    const ccy = by + bh / 2
+    ctx.fillStyle = 'rgba(0,0,0,0.3)'
+    ctx.fillRect(bx, by, bw, bh)
+    const alt = f.data.series('altitude') ?? []
+    const half = 10 // seconds each side of "now"
+    if (alt.length) {
+      const cur = scalarAt(alt, f.timeSec) ?? 0
+      const N = bw
+      const ys = []
+      let dev = 0.5 // metres; min so a flat window doesn't divide by ~0
+      for (let i = 0; i <= N; i++) {
+        const a = scalarAt(alt, f.timeSec - half + (i / N) * 2 * half)
+        ys.push(a)
+        if (a != null) dev = Math.max(dev, Math.abs(a - cur))
+      }
+      const vs = (bh / 2 - 4) / dev
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(bx, by, bw, bh)
+      ctx.clip()
+      ctx.strokeStyle = GRAY
+      ctx.lineWidth = 2
+      ctx.lineJoin = 'round'
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+      let on = false
+      for (let i = 0; i <= N; i++) {
+        if (ys[i] == null) {
+          on = false
+          continue
+        }
+        const px = bx + (i / N) * bw
+        const py = ccy - (ys[i] - cur) * vs
+        on ? ctx.lineTo(px, py) : (ctx.moveTo(px, py), (on = true))
+      }
+      ctx.stroke()
+      ctx.restore()
+    }
+
+    // grade slope-line through the centre dot (angle = atan(grade%/100); rotation is
+    // damped since `g` is the smoothed gradient)
+    const ang = Math.atan(g / 100) // + = uphill
+    const L = bw / 2
+    const dx = Math.cos(ang)
+    const dy = -Math.sin(ang) // up = −y
+    ctx.strokeStyle = sgr.valid ? ACCENT : GRAY
+    ctx.lineWidth = 2.5
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(ccx - L * dx, ccy - L * dy)
+    ctx.lineTo(ccx + L * dx, ccy + L * dy)
+    ctx.stroke()
+    // centre dot = current altitude
+    ctx.fillStyle = sgr.valid ? CYAN : GRAY
+    ctx.beginPath()
+    ctx.arc(ccx, ccy, 3, 0, Math.PI * 2)
+    ctx.fill()
+
+    // label + number (kept)
     ctx.fillStyle = CYAN
     ctx.font = `600 18px ${FONT}`
     ctx.textBaseline = 'alphabetic'
