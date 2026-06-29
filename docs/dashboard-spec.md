@@ -120,9 +120,13 @@ ground speed** from the position track:
   override); `src/smooth.js`.
 - derived-`speed` fallback (§3) — `speedSamples` shared helper (1 s window),
   triggered only when the `speed` channel is wholly absent; gopro + gpx.
+- **source-axis elevation smoothing (adopted)** — gpx-stabilizer now ships it;
+  `provider-gopro` enables it by default (`opts.smooth`, default on → forces
+  `stabilize`), so `gradient` is computed from slope-stable `ele`. On `GX065132`
+  the gradient range drops from raw **−39…26 %** to **−11.8…11.2 %**. `--no-stabilize`
+  keeps raw. (Wiring + acceptance: [`gpx-smoothing-integration.md`](gpx-smoothing-integration.md).)
 
-Source-axis reconstruction (the upstream this layer sits on, §0) is the
-**gpx-stabilizer** side — its SPEC's *elevation-reconstruction (track smoothing)*
-contract. This presentation layer is the thin residual-polish on top; the lib's
-position/elevation stabilization is the high-leverage fix that steadies most gauges
-at the source.
+The lib's position/elevation stabilization is the high-leverage fix that steadies
+most gauges at the source; this presentation layer is the thin residual-polish on
+top. Resampling (the lib's other half) is **not adopted** — this repo samples
+per-frame and dims on `maxGap`, which already covers it.

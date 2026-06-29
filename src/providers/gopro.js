@@ -84,9 +84,12 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  * @param {object} [opts]
  * @param {string} [opts.file]   telemetry source; defaults to the matching base-video source
  * @param {number} [opts.rate]   GPS resample rate in Hz (omit = native ~18 Hz)
- * @param {boolean|object} [opts.stabilize]  run gpx-stabilizer's noise removal
- *   first. NOTE: stabilize drops each point's `fix`, so fix-filtering is skipped
- *   when on — it trusts stabilize to have removed pre-lock/outlier points.
+ * @param {boolean} [opts.smooth=true]  elevation smoothing (gpx-stabilizer) → a
+ *   slope-stable `gradient`. Default ON; implies cleaning. Set `stabilize:false` for raw.
+ * @param {boolean|object} [opts.stabilize]  gpx-stabilizer noise removal; `false`
+ *   forces raw points (disables smoothing too). NOTE: cleaning drops each point's
+ *   `fix`, so fix-filtering is skipped — it trusts the cleaner to have removed
+ *   pre-lock/outlier points. `speed` is dropped too → the GPS-derived fallback fills it.
  * @param {number} [opts.maxGap=3]      seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim), e.g. mid-track fix loss
  * @param {number} [opts.gradeWindowM=20]  distance window (m) the gradient slope is
@@ -132,10 +135,21 @@ export default function gopro(opts = {}) {
       const speedWindowSec = opts.speedWindowSec ?? 1
       let timezone = null
 
+      // Elevation smoothing (default ON): gpx-stabilizer rewrites each survivor's `ele`
+      // to a slope-stable value, so the derived `gradient` stops jittering (raw GPS
+      // altitude is the noisiest axis). `smooth` requires cleaning, so it forces
+      // stabilize on; `stabilize: false` keeps raw points (no clean, no smooth).
+      // See docs/gpx-smoothing-integration.md.
+      const smooth = opts.smooth ?? true
+      const stab =
+        opts.stabilize === false
+          ? false
+          : { ...(typeof opts.stabilize === 'object' ? opts.stabilize : {}), ...(smooth ? { smooth: true } : {}) }
+
       for (const target of targets) {
         const res = await readGoproTelemetry(target.path, {
           ...(opts.rate != null ? { rate: opts.rate } : {}),
-          ...(opts.stabilize != null ? { stabilize: opts.stabilize } : {}),
+          stabilize: stab,
         })
         if (timezone == null && res.timezone) timezone = res.timezone // first segment with a tz wins
         const good = goodFixes(res.points)

@@ -129,9 +129,10 @@ Done:
       timezone resolution (explicit > provider > default); `clockOffsetSec`
       manual fix for a wrong camera clock
 - [x] CLI: `movie-layers <video|dir> [...]` → stitch + overlay; directory input,
-      multi-clip concat, GoPro auto-dashboard, no-GPS pass-through (stitch only),
-      aspect-aware (ratio-safe) layout, `--snapshot` PNG preview, staged logging,
-      `--gpx` / `--clock-offset` / `--stabilize` flags
+      multi-clip concat, GoPro auto-dashboard (GPS cleaned + elevation-smoothed by
+      default for a stable gradient), no-GPS pass-through (stitch only), aspect-aware
+      layout + `--flip`, `--snapshot` PNG preview, staged logging + ETA, `--open`,
+      `--quiet`, `--gpx` / `--clock-offset` / `--no-stabilize` flags
 - [x] Dashboard presentation: per-gauge display smoothing (default-on,
       `--no-smooth`) + GPS-derived `speed` fallback (when device speed is absent) —
       see [`docs/dashboard-spec.md`](docs/dashboard-spec.md)

@@ -25,14 +25,6 @@ import gpx from './providers/gpx.js'
 import dashboard from './providers/dashboard.js'
 import datetime from './providers/datetime.js'
 
-// Stabilize is the INTENDED default (cleaner GPS → steadier gauges), but today it
-// drops the `speed` channel and the elevation-reconstruction (stable gradient)
-// work isn't in gpx-stabilizer yet (see its SPEC.md contract) — so enabling it now
-// would only lose speed without fixing gradient. It is therefore TEMPORARILY off:
-// flip this to `true` once the lib lands speed-carry + elevation smoothing, and the
-// default becomes on. `--stabilize` / `--no-stabilize` always override explicitly.
-const STABILIZE_READY = false
-
 const USAGE = `movie-layers — glue clips into one video, with a telemetry overlay
 
 usage:
@@ -47,10 +39,9 @@ options:
   --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
   --fps N               output framerate (default 30)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
-  --stabilize           clean GPS noise first (gpx-stabilizer); speed is derived from GPS
-  --no-stabilize        force raw GPS (stabilize default is currently off; see code)
+  --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
   --no-datetime         omit the date/time readout
-  --no-smooth           disable gauge value smoothing (on by default)
+  --no-smooth           disable gauge-value display smoothing (on by default)
   --flip                swap the bottom corners — gauges right, track map left
   --baseline N          logical baseline height for gadget scaling (default 1080)
   -h, --help            this help
@@ -215,9 +206,10 @@ async function main() {
     dataProvider = gpx({ file: args.gpx })
     log(`  source: sidecar gpx ${args.gpx}`)
   } else if (hasGps) {
-    const stabilize = args.stabilize ? true : args.noStabilize ? false : STABILIZE_READY
-    dataProvider = gopro(stabilize ? { stabilize: true } : {})
-    log(`  source: embedded GoPro GPS${stabilize ? ' (stabilized)' : ''}`)
+    // elevation smoothing is the provider default (clean gradient); --no-stabilize = raw
+    const raw = !!args.noStabilize
+    dataProvider = gopro(raw ? { stabilize: false } : {})
+    log(`  source: embedded GoPro GPS${raw ? ' (raw)' : ' (smoothed)'}`)
   } else {
     // pass-through: no telemetry → just stitch/encode the footage (datetime if a clock exists)
     const minimal = withDatetime && info?.creationTime != null ? 'datetime only' : 'no overlay (stitch only)'
