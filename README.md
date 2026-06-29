@@ -142,13 +142,19 @@ Done:
       scale; tiles fetched once and disk-cached (`--map-cache`, default
       `~/.cache/movie-layers/tiles`; `--map-zoom` overrides the auto fit). The
       track's small follow-circle inset keeps its own view (no basemap)
+- [x] Encode + render speed: detection-based hardware-encoder **auto-upgrade**
+      (videotoolbox / nvenc / qsv / amf — `--no-hw` forces software, explicit
+      `--profile` overrides), ffmpeg `--profile` (built-in + user JSON), **`--jobs N`**
+      parallel-chunk render with lossless concat (a warm-up overlap keeps gauge
+      smoothing seamless across seams), `--range START:END` sub-clip render, and
+      `--widget-fps` (overlay draw rate, independent of output `--fps`)
 
 Planned:
 
 - [ ] Sidecar `.fit` UTC alignment (binary FIT decoder — `.gpx` is done);
-      `sourceInPoint` (segment trimming)
+      `sourceInPoint` (per-segment in-point; `--range` already trims the output timeline)
 - [ ] Perf: `toBuffer('raw')` + `bgra` (premultiplied) fast path; DoubleBuffer-style
-      writer to overlap draw with the pipe write; GPU ffmpeg profiles (`overlay_cuda`)
+      writer to overlap draw with the pipe write
 - [ ] Layout loader (declarative document → layers)
 
 ## License

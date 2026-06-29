@@ -47,6 +47,10 @@ export class Engine {
     timezone = null, // display tz for dateTime
     scale = null, // explicit logical→physical scale (overrides scaleBaseline)
     scaleBaseline = null, // logical baseline height; scale = height / scaleBaseline (e.g. 1080)
+    renderStartSec = null, // render only [start,end) of the timeline (a parallel-render chunk);
+    renderEndSec = null, //    base is `-ss`-seeked to start and cut at the chunk's overlay end
+    renderWarmupSec = 0, // draw this many seconds before renderStartSec WITHOUT emitting them,
+    //                      so stateful gauge smoothing converges to the right value at the seam
     background = null, // css colour to clear with; null = transparent
     baseVideo = null, // single optional base video (always the bottom layer)
     output,
@@ -84,6 +88,9 @@ export class Engine {
     this._segmentsOpt = segments
     this._startDateTime = startDateTime
     this._clockOffsetSec = clockOffsetSec
+    this._renderStartSec = renderStartSec
+    this._renderEndSec = renderEndSec
+    this._renderWarmupSec = renderWarmupSec
 
     this.width = null
     this.height = null
@@ -454,9 +461,12 @@ export class Engine {
 
     const anchorMs = this.segments[0].startUtc
 
+    const ranged = this._renderStartSec != null || this._renderEndSec != null
+
     // No overlay layers + a base video → nothing to draw, so stitch losslessly
     // (stream copy) instead of re-encoding every frame through the canvas pipe.
-    if (built.length === 0 && this.baseVideos.length >= 1) {
+    // (A ranged render always re-encodes — the stream-copy shortcut ignores ranges.)
+    if (built.length === 0 && this.baseVideos.length >= 1 && !ranged) {
       return concatCopy(this.baseVideos, this.output, {
         ffmpeg: this.ffmpegOptions.ffmpeg,
         creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
@@ -474,17 +484,28 @@ export class Engine {
       pixfmt: 'rgba',
       creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
       onCommand,
+      seekSec: this._renderStartSec,
+      // cut the chunk to its window length (overlay filter length follows the longer base)
+      clipSec: ranged && this._renderEndSec != null ? this._renderEndSec - (this._renderStartSec ?? 0) : null,
       ...this.ffmpegOptions,
     }).start()
 
+    const writeStart = this._renderStartSec // first emitted frame; null = from the top
+    const drawStart = writeStart != null ? writeStart - this._renderWarmupSec : null
     try {
       for (const step of scene.timeline.steps()) {
+        if (drawStart != null && step.timeSec < drawStart) continue
+        if (this._renderEndSec != null && step.timeSec >= this._renderEndSec) break
         ctx.clearRect(0, 0, this.width, this.height)
         if (this.background) {
           ctx.fillStyle = this.background
           ctx.fillRect(0, 0, this.width, this.height)
         }
+        // Always draw — this advances stateful gauge smoothing. But a warm-up frame
+        // (before writeStart) is NOT emitted: it only exists to converge the smoother
+        // so a parallel chunk's seam matches the single-render value.
         this._drawOverlay(ctx, built, data, scene, step)
+        if (writeStart != null && step.timeSec < writeStart) continue
         const { data: pixels } = ctx.getImageData(0, 0, this.width, this.height)
         await pipe.writeFrame(Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength))
         onProgress?.(step.index + 1, scene.timeline.frameCount)

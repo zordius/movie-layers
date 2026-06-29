@@ -99,6 +99,10 @@ export class FfmpegPipe {
     output,
     ffmpeg = 'ffmpeg',
     pixfmt = 'rgba', // getImageData() gives straight-alpha RGBA
+    inputArgs = [], // decode options BEFORE the base `-i` (e.g. a profile's `-hwaccel nvdec`)
+    seekSec = null, // `-ss` before the base `-i` (accurate seek) — render a sub-range (parallel chunks)
+    clipSec = null, // output `-t`: cut the chunk to this many seconds (the overlay filter's
+    //                length follows the longer base, so -shortest won't do it; -t is reliable)
     outputArgs = ['-vcodec', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'],
     filter = '[0:v][1:v]overlay',
     creationTime = null,
@@ -114,6 +118,9 @@ export class FfmpegPipe {
       output,
       ffmpeg,
       pixfmt,
+      inputArgs,
+      seekSec,
+      clipSec,
       outputArgs,
       filter,
       creationTime,
@@ -145,12 +152,15 @@ export class FfmpegPipe {
 
     const args = ['-hide_banner', '-y', ...(this.logLevel ? ['-loglevel', this.logLevel] : [])]
     if (this.baseVideos.length >= 1) {
-      args.push(...this._baseInput(), ...rawIn, '-filter_complex', this.filter)
+      // profile input opts (e.g. -hwaccel) then an accurate `-ss` seek → before the base -i
+      const seek = this.seekSec != null ? ['-ss', String(this.seekSec)] : []
+      args.push(...this.inputArgs, ...seek, ...this._baseInput(), ...rawIn, '-filter_complex', this.filter)
     } else {
       args.push(...rawIn)
     }
 
     args.push('-r', String(this.fps), ...this.outputArgs)
+    if (this.clipSec != null) args.push('-t', String(this.clipSec))
     if (this.creationTime) args.push('-metadata', `creation_time=${this.creationTime}`)
     args.push(this.output)
 

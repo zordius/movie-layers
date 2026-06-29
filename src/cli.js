@@ -15,16 +15,18 @@
 // `scaleBaseline` normalizes it, so the gadgets sit correctly at any resolution /
 // aspect ratio (2.7K, 4K, 4:3, …), not just 1080p.
 import { spawn } from 'node:child_process'
-import { readdirSync, realpathSync, statSync } from 'node:fs'
+import { readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { Engine, Source } from './index.js'
+import { concatCopy } from './ffmpeg.js'
 import gopro from './providers/gopro.js'
 import gpx from './providers/gpx.js'
 import dashboard from './providers/dashboard.js'
 import datetime from './providers/datetime.js'
 import mapProvider from './providers/map.js'
+import { resolveProfile, detectHwEncoder, BUILTIN_PROFILES } from './profiles.js'
 
 const USAGE = `movie-layers — glue clips into one video, with a telemetry overlay
 
@@ -39,6 +41,17 @@ options:
   -q, --quiet           silence the staged log / progress (errors still print)
   --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
   --fps N               output framerate (default 30)
+  --widget-fps N        rate the overlay/widgets are drawn (default: = --fps); lower
+                        = fewer canvas frames → faster render, base video stays --fps
+  --jobs N              render in N parallel processes + lossless concat (single clip
+                        with an overlay; near-Nx faster until the encode floor)
+  --range START:END     render only seconds [START,END) of the clip (one chunk). A chunk
+                        whose START>0 warms up gauge smoothing first, so hand-split +
+                        concat seams don't jump. Boundaries should meet (0:10 then 10:20).
+  --profile NAME        ffmpeg encode profile (built-in: ${Object.keys(BUILTIN_PROFILES).sort().join(', ')};
+                        or a name from ~/.config/movie-layers/ffmpeg-profiles.json)
+  --profile-file PATH   profiles JSON path (default: ~/.config/movie-layers/ffmpeg-profiles.json)
+  --no-hw               disable the auto hardware-encoder upgrade (use software x264)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
   --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
   --no-datetime         omit the date/time readout
@@ -62,6 +75,7 @@ function parseArgs(argv) {
     if (t === '-h' || t === '--help') a.help = true
     else if (t === '--no-datetime') a.noDatetime = true
     else if (t === '--no-smooth') a.noSmooth = true
+    else if (t === '--no-hw') a['no-hw'] = true
     else if (t === '--map') a.map = true
     else if (t === '--snapshot') a.snapshot = true
     else if (t === '--open') a.open = true
@@ -169,6 +183,65 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = 
   return layout
 }
 
+/** Drop `--jobs N`, `--out X`, and `--open` from a raw argv so it can drive a chunk child. */
+function chunkArgv(rawArgv) {
+  const out = []
+  for (let i = 0; i < rawArgv.length; i++) {
+    const t = rawArgv[i]
+    if (t === '--jobs' || t === '--out') i++ // drop the flag AND its value
+    else if (t === '--open') continue // parent opens the final concat, not each chunk
+    else out.push(t)
+  }
+  return out
+}
+
+/**
+ * Parallel render: split [0,duration) into `jobs` frame-aligned ranges, render each in
+ * its own CLI child process (`--range start:end`), then losslessly concat the chunks.
+ * Near-Nx faster (the draw is single-threaded per process) until the encode floor.
+ * Seam note: per-chunk gauge display-smoothing restarts at each boundary (the first
+ * sample snaps, so no sweep-from-zero — just a velocity reset; the basemap/halo/clock
+ * are global and continuous).
+ */
+async function renderParallel({ rawArgv, jobs, out, durationSec, inputFps, log }) {
+  const Fi = Math.max(1, Math.round(durationSec * inputFps)) // total overlay frames
+  const bound = []
+  for (let i = 0; i <= jobs; i++) bound.push(Math.round((i * Fi) / jobs))
+  const ranges = []
+  for (let i = 0; i < jobs; i++) if (bound[i] < bound[i + 1]) ranges.push([bound[i] / inputFps, bound[i + 1] / inputFps])
+
+  const base = chunkArgv(rawArgv)
+  const cliPath = fileURLToPath(import.meta.url)
+  const chunks = ranges.map((_, i) => join(dirname(out), `.ml-chunk-${process.pid}-${i}-${basename(out)}`))
+  log(`parallel: ${ranges.length} chunks × ~${fmtDur(durationSec / ranges.length)} → ${out}`)
+  const t0 = Date.now()
+  let done = 0
+  await Promise.all(
+    ranges.map(([s, e], i) => {
+      const argv = [cliPath, ...base, '--range', `${s}:${e}`, '--out', chunks[i], '--quiet']
+      return new Promise((res, rej) => {
+        const p = spawn(process.execPath, argv, { stdio: ['ignore', 'ignore', 'inherit'] })
+        p.on('error', rej)
+        p.on('close', (code) => {
+          if (code !== 0) return rej(new Error(`chunk ${i} (${s.toFixed(1)}–${e.toFixed(1)}s) exited ${code}`))
+          log(`  chunk ${++done}/${ranges.length} done`)
+          res()
+        })
+      })
+    }),
+  )
+  await concatCopy(chunks, out, {})
+  for (const f of chunks) {
+    try {
+      unlinkSync(f)
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+  log(`done: ${out}  (${durationSec.toFixed(1)}s)  in ${fmtDur((Date.now() - t0) / 1000)} using ${ranges.length} jobs`)
+  return out
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.help || args._.length === 0) {
@@ -187,6 +260,9 @@ async function main() {
   const out =
     args.out ?? join(dirname(input), `${basename(input, extname(input))}-overlay.${ext}`)
   const fps = args.fps ? Number(args.fps) : 30
+  const widgetFps = args['widget-fps'] ? Number(args['widget-fps']) : null // overlay draw rate; null = = fps
+  const range = args.range ? args.range.split(':').map(Number) : null // chunk render window [start,end] seconds
+  const jobs = args.jobs ? Math.max(1, Math.floor(Number(args.jobs))) : 1
   const baseline = args.baseline ? Number(args.baseline) : 1080
   const withDatetime = !args.noDatetime
   const log = args.quiet ? () => {} : (...a) => console.log(...a) // --quiet silences stdout info/progress
@@ -236,6 +312,23 @@ async function main() {
     : null
   if (args.map && !dataProvider) log('  note: --map needs GPS telemetry — no basemap drawn')
 
+  // Encoder resolution, precedence: explicit --profile > auto hardware-encoder upgrade
+  // (detection-based, default on) > software x264. `--no-hw` disables the auto step; a
+  // chunk (--range) inherits this via the passed-through argv. Snapshots don't encode.
+  let ffmpegOptions = {}
+  let enc = null
+  if (args.profile) {
+    enc = resolveProfile(args.profile, { ...(args['profile-file'] ? { file: args['profile-file'] } : {}) })
+    log(`  profile: ${args.profile} → ${enc.output.join(' ')}`)
+  } else if (!args['no-hw'] && !args.snapshot) {
+    const hw = detectHwEncoder()
+    if (hw) {
+      enc = { input: [], output: hw.output, filter: null }
+      log(`  encoder: auto-upgrade → ${hw.label} (${hw.codec}); --no-hw to force software`)
+    }
+  }
+  if (enc) ffmpegOptions = { inputArgs: enc.input, outputArgs: enc.output, ...(enc.filter ? { filter: enc.filter } : {}) }
+
   // providers + layout (full dashboard with data; datetime-or-nothing without)
   const providers = dataProvider
     ? [dataProvider, dashboard, datetime, ...(mapCfg ? [mapProvider] : [])]
@@ -246,16 +339,41 @@ async function main() {
       ? [{ type: 'datetime' }]
       : []
 
+  // Parallel render (--jobs N): split into N chunks rendered by child processes, then
+  // concat. Only for a single clip WITH an overlay (a pure stitch is already a fast copy)
+  // and not a chunk (--range) / snapshot. Short-circuits before the single-engine path.
+  if (jobs > 1 && !args.range && !args.snapshot && files.length === 1 && layout.length > 0 && info?.durationSec) {
+    log(`movie-layers: parallel render, ${jobs} jobs`)
+    await renderParallel({
+      rawArgv: process.argv.slice(2),
+      jobs,
+      out,
+      durationSec: info.durationSec,
+      inputFps: widgetFps ?? fps,
+      log,
+    })
+    if (args.open) openFile(out)
+    return
+  }
+  if (jobs > 1 && files.length > 1) log(`note: --jobs needs a single clip — rendering normally`)
+
   const engine = new Engine({
     // 1 clip → baseVideo; many → segments (ffmpeg concat over one logical timeline)
     ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
     fps,
+    inputFps: widgetFps, // overlay draw rate (null → Engine defaults it to fps)
+    renderStartSec: range?.[0] ?? null, // a chunk renders only its [start,end) window
+    renderEndSec: range?.[1] ?? null,
+    // warm-up lead-in for a non-first chunk so gauge smoothing converges at the seam
+    // (~1.5 s ≈ 4× the 0.35 s smoothTime; clamped so it never seeks before 0)
+    renderWarmupSec: range && range[0] > 0 ? Math.min(range[0], 1.5) : 0,
     scaleBaseline: baseline, // ratio fix: normalize gadget positions to a 1080 logical space
     clockOffsetSec: args['clock-offset'] ? Number(args['clock-offset']) : 0,
     gaugeSmoothing: !args.noSmooth,
     providers,
     layout,
     output: out,
+    ffmpegOptions,
   })
 
   // load data once; report what was found
@@ -274,6 +392,10 @@ async function main() {
 
   // ── Stage 2: render plan ─────────────────────────────────────────────────────
   log(`widgets: ${summary.layers.join(' · ') || '(none — stitch only)'}`)
+  if (args.profile && !args.snapshot && summary.layers.length === 0)
+    console.warn(`note: --profile ${args.profile} ignored — a pure stitch is a stream copy (no re-encode)`)
+  if (args.jobs && Number(args.jobs) > 1 && !args.range && summary.layers.length === 0)
+    console.warn(`note: --jobs ignored — a pure stitch is already one fast stream copy`)
 
   // ── Stage 3: do it ───────────────────────────────────────────────────────────
   const logCmd = (cmd) => log(`  $ ${cmd.join(' ')}`)
