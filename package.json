@@ -15,7 +15,8 @@
     "./dashboard": "./src/providers/dashboard.js",
     "./datetime": "./src/providers/datetime.js",
     "./gopro": "./src/providers/gopro.js",
-    "./gpx": "./src/providers/gpx.js"
+    "./gpx": "./src/providers/gpx.js",
+    "./map": "./src/providers/map.js"
   },
   "scripts": {
     "example": "node examples/basic.js",

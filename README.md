@@ -78,6 +78,7 @@ movie-layers GX065132.MP4                    # → GX065132-overlay.mp4 (GoPro a
 movie-layers ./ride-folder                   # concat every clip in the folder (sorted)
 movie-layers GH010001.MP4 GH020001.MP4       # concat two clips into one timeline
 movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
+movie-layers GX065132.MP4 --map              # OpenStreetMap basemap under the track map
 movie-layers plain.mp4                       # no GPS → just stitch/encode (no dashboard)
 movie-layers clip.mp4 --snapshot --at 30 --open  # preview PNG at 30 s, then open it
 ```
@@ -136,10 +137,14 @@ Done:
 - [x] Dashboard presentation: per-gauge display smoothing (default-on,
       `--no-smooth`) + GPS-derived `speed` fallback (when device speed is absent) —
       see [`docs/dashboard-spec.md`](docs/dashboard-spec.md)
+- [x] `provider-map`: optional OpenStreetMap basemap under the big track map
+      (`--map`, off by default), projected with the track's own fit so it stays to
+      scale; tiles fetched once and disk-cached (`--map-cache`, default
+      `~/.cache/movie-layers/tiles`; `--map-zoom` overrides the auto fit). The
+      track's small follow-circle inset keeps its own view (no basemap)
 
 Planned:
 
-- [ ] `provider-map`
 - [ ] Sidecar `.fit` UTC alignment (binary FIT decoder — `.gpx` is done);
       `sourceInPoint` (segment trimming)
 - [ ] Perf: `toBuffer('raw')` + `bgra` (premultiplied) fast path; DoubleBuffer-style

@@ -359,6 +359,17 @@ export class Engine {
     // logical height is the baseline and the logical width = baseline × aspect.
     const s = this._scale ?? (this._scaleBaseline ? this.height / this._scaleBaseline : 1)
     this.scale = s
+
+    // async layer init (optional `prepare`), awaited once before the render loop:
+    // a layer that needs heavy/async setup that's constant across frames (e.g.
+    // provider-map fetching + compositing OSM tiles) does it here, given the data
+    // view and the logical→physical scale. The synchronous draw() just blits it.
+    const view = dataset.view()
+    for (const { instance } of built) {
+      if (typeof instance.prepare === 'function') {
+        await instance.prepare({ data: view, scale: s, logicalW: this.width / s, logicalH: this.height / s })
+      }
+    }
     return {
       canvas,
       ctx,

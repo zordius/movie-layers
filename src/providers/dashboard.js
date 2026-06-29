@@ -1,5 +1,6 @@
 import { Layer, defineProvider } from '../layer.js'
 import { Smoother } from '../smooth.js'
+import { projectTrack } from '../geo.js'
 
 /**
  * Smoothed display value for a numeric gauge — presentation-only (dashboard-spec
@@ -170,7 +171,10 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
   ctx.arc(cx, cy, R + 2, 0, Math.PI * 2)
   ctx.fill()
   const g = sg.value ?? { lat: 0, lon: 0 }
-  if (sg.valid && sc) {
+  // Render the full moving-window map whenever we have a scale + a position — INCLUDING
+  // the freeze state (held value / no signal), where the picture is kept as-is and only
+  // the centre dot greys out (below). Crosshair fallback is just the no-position case.
+  if (sc && sg.value) {
     const { scale, kx } = sc
     const px = (p) => cx + (p.lon - g.lon) * kx * scale
     const py = (p) => cy - (p.lat - g.lat) * scale
@@ -178,8 +182,9 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
     ctx.beginPath()
     ctx.arc(cx, cy, R, 0, Math.PI * 2)
     ctx.clip()
-    // 1 m × 1 m grid anchored to integer-metre ground coordinates (not the dot), so it
-    // slides under the moving centre as the rider travels. Fixed zoom (1 m = 10 px).
+    // 20 m × 20 m grid anchored to multiple-of-20-metre ground coordinates (not the dot),
+    // so it slides under the moving centre as the rider travels. Fixed zoom (10 m = 10 px).
+    const STEP = 20 // grid cell, metres
     const mpp = scale / 111320 // px per metre
     if (Number.isFinite(mpp) && mpp > 0) {
       const spanM = R / mpp // metres from centre to ring
@@ -188,12 +193,12 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
       ctx.strokeStyle = GRID
       ctx.lineWidth = 1
       ctx.beginPath()
-      for (let e = Math.ceil(e0 - spanM); e <= e0 + spanM; e++) {
+      for (let e = Math.ceil((e0 - spanM) / STEP) * STEP; e <= e0 + spanM; e += STEP) {
         const x = cx + (e - e0) * mpp
         ctx.moveTo(x, cy - R)
         ctx.lineTo(x, cy + R)
       }
-      for (let nm = Math.ceil(n0 - spanM); nm <= n0 + spanM; nm++) {
+      for (let nm = Math.ceil((n0 - spanM) / STEP) * STEP; nm <= n0 + spanM; nm += STEP) {
         const y = cy - (nm - n0) * mpp
         ctx.moveTo(cx - R, y)
         ctx.lineTo(cx + R, y)
@@ -233,7 +238,18 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
       ctx.lineTo(cx + dx * (R - 5), cy + dy * (R - 5))
       ctx.stroke()
     }
-    ctx.fillStyle = ACCENT
+    // pulsing halo around the centre dot — a regular "ping": expands + fades on a
+    // 1.2 s cycle (driven by playback time, so every render is identical). Frozen
+    // (held / no signal) → no pulse and the dot greys out; the rest of the picture stays.
+    if (sg.valid) {
+      const P = 1 // s — one ping per second
+      const phase = (f.timeSec % P) / P // 0→1 ramp, then restart (expand only, no contract)
+      ctx.fillStyle = `rgba(131, 224, 0, ${(0.35 * (1 - phase)).toFixed(3)})` // ACCENT, fading out as it grows
+      ctx.beginPath()
+      ctx.arc(cx, cy, 5 + 12 * phase, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    ctx.fillStyle = sg.valid ? ACCENT : GRAY
     ctx.beginPath()
     ctx.arc(cx, cy, 5, 0, Math.PI * 2)
     ctx.fill()
@@ -528,28 +544,10 @@ class Track extends Layer {
     this.inset = c.inset ?? true // moving-window mini-map in the top-left corner
     this._ret = undefined // cached inset zoom (computed once)
   }
+  // Shared with provider-map (geo.js) so a basemap drawn UNDER this widget uses
+  // the identical fit and stays exactly to scale (尺度同步).
   _project(series) {
-    const pts = series.map((s) => s.value).filter((v) => v && v.lat != null)
-    if (pts.length === 0) return null
-    const lats = pts.map((p) => p.lat)
-    const lons = pts.map((p) => p.lon)
-    const minLat = Math.min(...lats)
-    const maxLat = Math.max(...lats)
-    const minLon = Math.min(...lons)
-    const maxLon = Math.max(...lons)
-    const midLat = (minLat + maxLat) / 2
-    const kx = Math.cos((midLat * Math.PI) / 180)
-    const spanLat = maxLat - minLat || 1e-6
-    const spanLon = (maxLon - minLon || 1e-6) * kx
-    const sc = Math.min(this.w / spanLon, this.h / spanLat) * 0.9
-    const drawW = spanLon * sc
-    const drawH = spanLat * sc
-    const offx = this.x + (this.w - drawW) / 2
-    const offy = this.y + (this.h - drawH) / 2
-    const project = (lat, lon) => [offx + (lon - minLon) * kx * sc, offy + drawH - (lat - minLat) * sc]
-    // `sc` is px per ° of latitude; the kx factor makes longitude isotropic, so px/metre
-    // is the same on both axes: 1° lat ≈ 111320 m. (offx, offy+drawH) is world (0,0).
-    return { project, ppm: sc / 111320, offx, offy, drawW, drawH }
+    return projectTrack(series, { x: this.x, y: this.y, w: this.w, h: this.h })
   }
   draw(ctx, f) {
     const series = f.data.series('gps')
@@ -626,7 +624,7 @@ class Track extends Layer {
       const R = Math.round(Math.min(this.w, this.h) * 0.153) // ~15% of the box (85% of the old 18%)
       const icx = this.x + R + 10
       const icy = this.y + R + 10
-      if (this._ret === undefined) this._ret = reticleScale(series, 10) // fixed 1 m = 10 px
+      if (this._ret === undefined) this._ret = reticleScale(series, 1) // fixed 10 m = 10 px (1 px/m)
       drawMovingWindow(ctx, icx, icy, R, series, f, cs, this._ret)
     }
   }

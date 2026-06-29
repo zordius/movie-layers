@@ -24,6 +24,7 @@ import gopro from './providers/gopro.js'
 import gpx from './providers/gpx.js'
 import dashboard from './providers/dashboard.js'
 import datetime from './providers/datetime.js'
+import mapProvider from './providers/map.js'
 
 const USAGE = `movie-layers — glue clips into one video, with a telemetry overlay
 
@@ -42,6 +43,9 @@ options:
   --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
   --no-datetime         omit the date/time readout
   --no-smooth           disable gauge-value display smoothing (on by default)
+  --map                 draw an OpenStreetMap basemap under the big track map (off by default)
+  --map-zoom N          force the basemap tile zoom (default: auto-fit to the track)
+  --map-cache DIR       tile cache directory (default: ~/.cache/movie-layers/tiles)
   --flip                swap the bottom corners — gauges right, track map left
   --baseline N          logical baseline height for gadget scaling (default 1080)
   -h, --help            this help
@@ -58,6 +62,7 @@ function parseArgs(argv) {
     if (t === '-h' || t === '--help') a.help = true
     else if (t === '--no-datetime') a.noDatetime = true
     else if (t === '--no-smooth') a.noSmooth = true
+    else if (t === '--map') a.map = true
     else if (t === '--snapshot') a.snapshot = true
     else if (t === '--open') a.open = true
     else if (t === '--flip') a.flip = true
@@ -119,7 +124,7 @@ export function expandInputs(inputs) {
  * @param {{hasSpeed:boolean, withDatetime:boolean, logicalW:number}} o
  *   logicalW = baseline × (videoWidth / videoHeight) — the logical canvas width.
  */
-export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = false }) {
+export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = false, map = null }) {
   const M = 5 // edge margin (logical px) — hug the corners
   const row = 997 // bottom-row top: panel height ≈ 78 → its bottom sits ~M from 1080
   const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~666 px wide
@@ -134,7 +139,11 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = 
   // square map = 1/3 of the 1080 logical height, clamped to the room beside the gauges
   const side = Math.max(160, Math.min(360, logicalW - 3 * M - (landscape ? ROW_W : GAUGE_W)))
   const trackX = gaugesRight ? M : logicalW - side - M
-  const layout = [{ type: 'track', x: trackX, y: 1080 - side - M, width: side, height: side }]
+  const trackBox = { x: trackX, y: 1080 - side - M, width: side, height: side }
+  // OSM basemap (opt-in) under the big track map: same box → identical projection,
+  // so it stays to scale. Placed FIRST in the layout so it draws beneath the track.
+  const layout = map ? [{ type: 'map', ...trackBox, ...map }] : []
+  layout.push({ type: 'track', ...trackBox })
 
   if (landscape) {
     // landscape: gauges along the bottom edge, speed just above the row
@@ -217,10 +226,22 @@ async function main() {
     log(`  source: no GPS — telemetry widgets off; ${minimal}`)
   }
 
+  // OSM basemap config (opt-in via --map); only meaningful when telemetry is present
+  const mapCfg = args.map
+    ? {
+        onLog: log,
+        ...(args['map-cache'] ? { cacheDir: args['map-cache'] } : {}),
+        ...(args['map-zoom'] ? { zoom: Number(args['map-zoom']) } : {}),
+      }
+    : null
+  if (args.map && !dataProvider) log('  note: --map needs GPS telemetry — no basemap drawn')
+
   // providers + layout (full dashboard with data; datetime-or-nothing without)
-  const providers = dataProvider ? [dataProvider, dashboard, datetime] : [datetime]
+  const providers = dataProvider
+    ? [dataProvider, dashboard, datetime, ...(mapCfg ? [mapProvider] : [])]
+    : [datetime]
   const layout = dataProvider
-    ? defaultLayout({ hasSpeed, withDatetime, logicalW, flip: args.flip })
+    ? defaultLayout({ hasSpeed, withDatetime, logicalW, flip: args.flip, map: mapCfg })
     : withDatetime && info?.creationTime != null
       ? [{ type: 'datetime' }]
       : []
