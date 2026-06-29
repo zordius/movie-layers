@@ -123,24 +123,25 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = 
   const M = 5 // edge margin (logical px) — hug the corners
   const row = 997 // bottom-row top: panel height ≈ 78 → its bottom sits ~M from 1080
   const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~666 px wide
-  const trackW = 170
-  const trackH = 360
   const ROW_W = 666 // latlon→gradient span (276 +5+180 +5+200)
   const GAUGE_W = 276 // widest single gauge (latlon), for the stacked column
+  const landscape = logicalW >= ROW_MIN
 
   // gauges hug one bottom corner (data-dense, the priority zone), the big track map
   // the other. Default = gauges left / map right; `--flip` swaps them for footage
   // whose subject sits on the other side. datetime stays top-left (small).
   const gaugesRight = flip
-  const trackX = gaugesRight ? M : Math.max(M, logicalW - trackW - M)
-  const layout = [{ type: 'track', x: trackX, y: 1080 - trackH - M, width: trackW, height: trackH }]
+  // square map = 1/3 of the 1080 logical height, clamped to the room beside the gauges
+  const side = Math.max(160, Math.min(360, logicalW - 3 * M - (landscape ? ROW_W : GAUGE_W)))
+  const trackX = gaugesRight ? M : logicalW - side - M
+  const layout = [{ type: 'track', x: trackX, y: 1080 - side - M, width: side, height: side }]
 
-  if (logicalW >= ROW_MIN) {
+  if (landscape) {
     // landscape: gauges along the bottom edge, speed just above the row
     const base = gaugesRight ? Math.max(M, logicalW - M - ROW_W) : M
     if (hasSpeed) layout.push({ type: 'speed', x: base, y: 914 })
     let x = base
-    layout.push({ type: 'latlon', x, y: row, windowSec: 4 })
+    layout.push({ type: 'latlon', x, y: row })
     x += 281 // latlon panel (276) + M
     layout.push({ type: 'altitude', x, y: row })
     x += 185 // altitude panel (180) + M
@@ -150,7 +151,7 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = 
     const base = gaugesRight ? Math.max(M, logicalW - M - GAUGE_W) : M
     let y = row
     for (const type of ['gradient', 'altitude', 'latlon', ...(hasSpeed ? ['speed'] : [])]) {
-      layout.push(type === 'latlon' ? { type, x: base, y, windowSec: 4 } : { type, x: base, y })
+      layout.push({ type, x: base, y })
       y -= 90
     }
   }

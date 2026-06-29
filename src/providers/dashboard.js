@@ -112,6 +112,167 @@ function slopeIcon(ctx, x, y, s, color) {
   ctx.stroke()
 }
 
+// interpolate a gps {lat,lon} from a t-sorted series at time `t` (binary search + lerp)
+function gpsAt(series, t) {
+  const p = series
+  if (!p.length) return null
+  if (t <= p[0].t) return p[0].value
+  if (t >= p[p.length - 1].t) return p[p.length - 1].value
+  let lo = 0
+  let hi = p.length - 1
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1
+    if (p[m].t <= t) lo = m
+    else hi = m
+  }
+  const a = p[lo].value
+  const b = p[hi].value
+  if (!a || !b) return a || b
+  const f = p[hi].t - p[lo].t ? (t - p[lo].t) / (p[hi].t - p[lo].t) : 0
+  return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f }
+}
+
+// compass bearing (radians; 0 = N, + = clockwise/E) of travel over the last `win`
+// seconds, or null when barely moving (heading undefined).
+function headingRad(series, t, win) {
+  const cur = gpsAt(series, t)
+  const past = gpsAt(series, t - win)
+  if (!cur || !past) return null
+  const lat0 = (((cur.lat + past.lat) / 2) * Math.PI) / 180
+  const east = (cur.lon - past.lon) * Math.cos(lat0)
+  const north = cur.lat - past.lat
+  if (Math.hypot(east, north) < 1e-7) return null
+  return Math.atan2(east, north)
+}
+
+// fixed zoom for a moving window (computed once → consistent density, only pans)
+function reticleScale(series, R, windowSec) {
+  const pts = series.filter((s) => s.value && s.value.lat != null)
+  if (pts.length < 2) return null
+  const kx = Math.cos((pts[pts.length >> 1].value.lat * Math.PI) / 180)
+  const steps = []
+  const dts = []
+  for (let i = 1; i < pts.length; i++) {
+    steps.push(Math.hypot((pts[i].value.lon - pts[i - 1].value.lon) * kx, pts[i].value.lat - pts[i - 1].value.lat))
+    dts.push(pts[i].t - pts[i - 1].t)
+  }
+  const median = (arr) => [...arr].sort((p, q) => p - q)[arr.length >> 1]
+  const halfSpan = Math.max((median(steps) || 1e-5) * (windowSec / (median(dts) || 1)), 2.5e-4)
+  return { scale: R / halfSpan, kx }
+}
+
+// moving-window mini-map: whole track gray + travelled green, centred on the current
+// position, with a reticle. (Lifted from the old latlon widget; now a map inset.)
+function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
+  ctx.fillStyle = 'rgba(0,0,0,0.45)' // backing disc for contrast over the big map
+  ctx.beginPath()
+  ctx.arc(cx, cy, R + 2, 0, Math.PI * 2)
+  ctx.fill()
+  const g = sg.value ?? { lat: 0, lon: 0 }
+  if (sg.valid && sc) {
+    const { scale, kx } = sc
+    const px = (p) => cx + (p.lon - g.lon) * kx * scale
+    const py = (p) => cy - (p.lat - g.lat) * scale
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(cx, cy, R, 0, Math.PI * 2)
+    ctx.clip()
+    ctx.lineJoin = 'round'
+    ctx.lineCap = 'round'
+    ctx.lineWidth = 3
+    ctx.strokeStyle = GRAY
+    ctx.beginPath()
+    let on = false
+    for (const s of series) {
+      if (!s.value || s.value.lat == null) continue
+      on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
+    }
+    ctx.stroke()
+    ctx.strokeStyle = ACCENT
+    ctx.beginPath()
+    on = false
+    for (const s of series) {
+      if (!s.value || s.value.lat == null) continue
+      if (s.t > f.timeSec) break
+      on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
+    }
+    if (on) ctx.lineTo(cx, cy)
+    ctx.stroke()
+    ctx.restore()
+    ctx.strokeStyle = ACCENT
+    ctx.lineWidth = 2.5
+    ctx.beginPath()
+    ctx.arc(cx, cy, R, 0, Math.PI * 2)
+    ctx.stroke()
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      ctx.beginPath()
+      ctx.moveTo(cx + dx * R, cy + dy * R)
+      ctx.lineTo(cx + dx * (R - 5), cy + dy * (R - 5))
+      ctx.stroke()
+    }
+    ctx.fillStyle = ACCENT
+    ctx.beginPath()
+    ctx.arc(cx, cy, 5, 0, Math.PI * 2)
+    ctx.fill()
+  } else {
+    crosshairIcon(ctx, cx, cy, 13, sg.valid ? ACCENT : GRAY)
+  }
+}
+
+// north-up compass: ring + cardinal ticks + 'N' + an arrow toward the smoothed
+// heading. `cs`/`sn` are the smoothed cos/sin of the bearing (null → no arrow).
+function drawCompass(ctx, cx, cy, R, cs, sn, valid) {
+  const col = valid ? ACCENT : GRAY
+  ctx.strokeStyle = col
+  ctx.lineWidth = 2.5
+  ctx.beginPath()
+  ctx.arc(cx, cy, R, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.lineWidth = 2
+  for (const [dx, dy] of [[0, -1], [0, 1], [1, 0], [-1, 0]]) {
+    ctx.beginPath()
+    ctx.moveTo(cx + dx * R, cy + dy * R)
+    ctx.lineTo(cx + dx * (R - 5), cy + dy * (R - 5))
+    ctx.stroke()
+  }
+  ctx.fillStyle = col
+  ctx.font = `600 11px ${FONT}`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('N', cx, cy - R + 8)
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'alphabetic'
+  if (cs != null && sn != null && (cs || sn)) {
+    const mag = Math.hypot(cs, sn) || 1
+    const ux = sn / mag // east → +x
+    const uy = -cs / mag // north → −y (up)
+    const tip = R - 4
+    const ax = cx + ux * tip
+    const ay = cy + uy * tip
+    ctx.strokeStyle = col
+    ctx.lineWidth = 3
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    ctx.moveTo(cx, cy)
+    ctx.lineTo(ax, ay)
+    ctx.stroke()
+    const bx = cx + ux * (tip - 8)
+    const by = cy + uy * (tip - 8)
+    ctx.fillStyle = col
+    ctx.beginPath()
+    ctx.moveTo(ax, ay)
+    ctx.lineTo(bx - uy * 5, by + ux * 5)
+    ctx.lineTo(bx + uy * 5, by - ux * 5)
+    ctx.closePath()
+    ctx.fill()
+  }
+  ctx.fillStyle = col
+  ctx.beginPath()
+  ctx.arc(cx, cy, 2.5, 0, Math.PI * 2)
+  ctx.fill()
+}
+
 // --- widgets ---
 class Speed extends Layer {
   constructor(c = {}) {
@@ -152,32 +313,10 @@ class Latlon extends Layer {
     super()
     this.x = c.x ?? 40
     this.y = c.y ?? 150
-    this.windowSec = c.windowSec ?? 10 // ± seconds of travel visible in the moving window
-    this._scale = undefined
-  }
-
-  // Fixed span, computed once: show ~windowSec of travel at the movie's typical
-  // speed → consistent line density and a zoom that never changes (only pans).
-  _ensureScale(series, R) {
-    if (this._scale !== undefined) return
-    const pts = series.filter((s) => s.value && s.value.lat != null)
-    if (pts.length < 2) {
-      this._scale = null
-      return
-    }
-    const kx = Math.cos((pts[pts.length >> 1].value.lat * Math.PI) / 180)
-    const steps = []
-    const dts = []
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1]
-      const b = pts[i]
-      steps.push(Math.hypot((b.value.lon - a.value.lon) * kx, b.value.lat - a.value.lat))
-      dts.push(b.t - a.t)
-    }
-    const median = (arr) => [...arr].sort((p, q) => p - q)[arr.length >> 1]
-    const halfSpan = Math.max((median(steps) || 1e-5) * (this.windowSec / (median(dts) || 1)), 2.5e-4)
-    this._kx = kx
-    this._scale = R / halfSpan
+    this.windowSec = c.windowSec ?? 3 // heading averaged over the last ~N s of travel
+    this.smoothTime = c.smoothTime ?? 0.4
+    this._cos = new Smoother({ smoothTime: this.smoothTime }) // smooth heading as a unit
+    this._sin = new Smoother({ smoothTime: this.smoothTime }) //   vector (wrap-safe)
   }
 
   draw(ctx, f) {
@@ -191,65 +330,14 @@ class Latlon extends Layer {
     const cx = x + 34
     const cy = y + h / 2
     const R = 26
+    // heading compass: bearing of travel, angular-smoothed via its (cos,sin) vector
+    // (avoids the 359°→0° wrap) with the same critically-damped follow as the gauges.
     const series = f.data.series('gps') ?? []
-    this._ensureScale(series, R)
-
-    if (sg.valid && this._scale) {
-      const scale = this._scale
-      const kx = this._kx
-      const px = (p) => cx + (p.lon - g.lon) * kx * scale
-      const py = (p) => cy - (p.lat - g.lat) * scale
-
-      ctx.save()
-      ctx.beginPath()
-      ctx.arc(cx, cy, R, 0, Math.PI * 2)
-      ctx.clip()
-      ctx.lineJoin = 'round'
-      ctx.lineCap = 'round'
-      ctx.lineWidth = 3
-
-      // whole track — not-yet-travelled = gray
-      ctx.strokeStyle = GRAY
-      ctx.beginPath()
-      let on = false
-      for (const s of series) {
-        if (!s.value || s.value.lat == null) continue
-        on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
-      }
-      ctx.stroke()
-
-      // travelled (t ≤ now) = green, joined to the current centre
-      ctx.strokeStyle = ACCENT
-      ctx.beginPath()
-      on = false
-      for (const s of series) {
-        if (!s.value || s.value.lat == null) continue
-        if (s.t > f.timeSec) break
-        on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
-      }
-      if (on) ctx.lineTo(cx, cy)
-      ctx.stroke()
-      ctx.restore()
-
-      // reticle: outer ring + ticks + centre dot
-      ctx.strokeStyle = ACCENT
-      ctx.lineWidth = 2.5
-      ctx.beginPath()
-      ctx.arc(cx, cy, R, 0, Math.PI * 2)
-      ctx.stroke()
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        ctx.beginPath()
-        ctx.moveTo(cx + dx * R, cy + dy * R)
-        ctx.lineTo(cx + dx * (R - 5), cy + dy * (R - 5))
-        ctx.stroke()
-      }
-      ctx.fillStyle = ACCENT
-      ctx.beginPath()
-      ctx.arc(cx, cy, 5, 0, Math.PI * 2)
-      ctx.fill()
-    } else {
-      crosshairIcon(ctx, cx, cy, 13, sg.valid ? ACCENT : GRAY)
-    }
+    const hd = sg.valid ? headingRad(series, f.timeSec, this.windowSec) : null
+    const moving = hd != null
+    const cs = this._cos.step(moving ? Math.cos(hd) : null, f.dt, moving)
+    const sn = this._sin.step(moving ? Math.sin(hd) : null, f.dt, moving)
+    drawCompass(ctx, cx, cy, R, cs, sn, sg.valid)
 
     ctx.font = `600 22px ${MONO}`
     ctx.textBaseline = 'alphabetic'
@@ -331,9 +419,12 @@ class Track extends Layer {
     super()
     this.x = c.x ?? 40
     this.y = c.y ?? 40
-    this.w = c.width ?? 160
-    this.h = c.height ?? 320
+    this.w = c.width ?? 360
+    this.h = c.height ?? 360
     this.grid = c.grid ?? true // semi-transparent panel + metric grid behind the track
+    this.inset = c.inset ?? true // moving-window mini-map in the top-left corner
+    this.windowSec = c.windowSec ?? 10 // ± seconds of travel visible in that inset
+    this._ret = undefined // cached inset zoom (computed once)
   }
   _project(series) {
     const pts = series.map((s) => s.value).filter((v) => v && v.lat != null)
@@ -426,6 +517,15 @@ class Track extends Layer {
       ctx.beginPath()
       ctx.arc(px, py, 6, 0, Math.PI * 2)
       ctx.fill()
+    }
+
+    // moving-window inset (zoomed, current-position-centred) in the top-left corner
+    if (this.inset) {
+      const R = Math.round(Math.min(this.w, this.h) * 0.18) // ~18% of the box
+      const icx = this.x + R + 10
+      const icy = this.y + R + 10
+      if (this._ret === undefined) this._ret = reticleScale(series, R, this.windowSec)
+      drawMovingWindow(ctx, icx, icy, R, series, f, cs, this._ret)
     }
   }
 }
