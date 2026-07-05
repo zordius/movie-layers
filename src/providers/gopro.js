@@ -92,7 +92,7 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  *   pre-lock/outlier points. `speed` is dropped too → the GPS-derived fallback fills it.
  * @param {number} [opts.maxGap=3]      seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim), e.g. mid-track fix loss
- * @param {number} [opts.gradeWindowM=20]  distance window (m) the gradient slope is
+ * @param {number} [opts.gradeWindowM=15]  distance window (m) the gradient slope is
  *   measured over — wider = smoother, since GPS altitude is noisy per-sample
  * @returns {{name, data}} a movie-layers data provider
  */
@@ -122,7 +122,7 @@ export default function gopro(opts = {}) {
       }
 
       const maxGap = opts.maxGap ?? 3
-      const W = opts.gradeWindowM ?? 20
+      const W = opts.gradeWindowM ?? 15
       const minSpan = 3 // m — below this, slope is dominated by GPS jitter
       const channels = {
         gps: { unit: 'deg', maxGap, samples: [] },

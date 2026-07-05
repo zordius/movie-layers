@@ -6,8 +6,8 @@ numbers are kept stable. Companion to
 
 **Status: §2 display smoothing, §3 derived-`speed` fallback, and §4's source-axis
 elevation smoothing are implemented ✅ (see
-[`gpx-smoothing-integration.md`](gpx-smoothing-integration.md)); only narrowing
-`gradeWindowM` below its current 20 m default remains deferred (🔜).**
+[`gpx-smoothing-integration.md`](gpx-smoothing-integration.md)), including the
+`gradeWindowM` default narrowed from 20 m to **15 m**.**
 
 ---
 

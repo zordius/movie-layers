@@ -180,5 +180,22 @@ Task 1 wired, Task 2 skipped, Task 3 confirmed. Answers to the report-back:
    The upstream "stabilize drops speed" open item is **resolved on the consumer side**
    (consumer derives it) — you can close it without widening `stabilize`'s output shape.
 
-Deferred: narrowing `gradeWindowM` below 20 m now that `ele` is smoothed (you flagged it as
-"evaluate, don't assume") — left at 20 m; can sharpen later.
+**`gradeWindowM` narrowing — evaluated and adopted (2026-07-05).** Measured
+`provider-gopro`'s `gradientSamples` directly on `GX065132.MP4` at five window
+sizes:
+
+| `gradeWindowM` | gradient range | jitter |
+|---|---|---|
+| 20 (prior default) | −11.8…11.2 % | 1.04 %/step |
+| **15 (new default)** | **−12.6…12.2 %** | **1.19 %/step** |
+| 10 | −12.7…13.4 % | 1.43 %/step |
+| 8 | −13.3…15.4 % | 1.59 %/step |
+| 5 | −13.3…18.3 % | 1.87 %/step |
+
+Baseline for comparison: raw (unsmoothed) `ele` at windowM 20 had jitter
+1.13 %/step (table above). 10 m and narrower already exceed that — the window
+is no longer compensating enough for per-sample noise, giving back most of
+what `smooth` gained. 15 m stays comfortably under it while tracking terrain a
+bit more sharply, so it's the new default in `provider-gopro` and
+`provider-gpx` (`opts.gradeWindowM`); pass `gradeWindowM: 20` to restore the
+prior behaviour.

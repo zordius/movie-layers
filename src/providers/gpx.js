@@ -67,7 +67,7 @@ function goodPoints(points) {
  * @param {string} [opts.name]   provider name for channel-merge precedence (default 'gpx')
  * @param {number} [opts.maxGap=3]  seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim)
- * @param {number} [opts.gradeWindowM=20]  distance window (m) the gradient slope is
+ * @param {number} [opts.gradeWindowM=15]  distance window (m) the gradient slope is
  *   measured over — wider = smoother, since GPS altitude is noisy per-sample
  * @returns {{name, data}} a movie-layers data provider
  */
@@ -136,7 +136,7 @@ export default function gpx(opts = {}) {
       // spatially contiguous, so compute over the whole placed run — per-segment
       // reset (for a track split across disjoint video segments) is a refinement;
       // for the common N=1 case it is identical.
-      for (const s of gradientSamples(placedPts, { windowM: opts.gradeWindowM ?? 20 })) {
+      for (const s of gradientSamples(placedPts, { windowM: opts.gradeWindowM ?? 15 })) {
         channels.gradient.samples.push(s)
       }
 
