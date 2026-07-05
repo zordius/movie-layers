@@ -151,8 +151,7 @@ Done:
 
 Planned:
 
-- [ ] Sidecar `.fit` UTC alignment (binary FIT decoder — `.gpx` is done);
-      `sourceInPoint` (per-segment in-point; `--range` already trims the output timeline)
+- [ ] Sidecar `.fit` UTC alignment (binary FIT decoder — `.gpx` is done)
 - [ ] Perf: `toBuffer('raw')` + `bgra` (premultiplied) fast path; DoubleBuffer-style
       writer to overlap draw with the pipe write
 - [ ] Layout loader (declarative document → layers)

@@ -183,7 +183,6 @@ The engine owns a list of segments. Each segment descriptor:
                          //   = cumulative duration of prior segments (gaps NOT counted)
   duration: 95,
   startUtc: <epoch ms>,  // wall-clock anchor for THIS segment (§5)
-  // sourceInPoint: 0    // 🔜 only when trimming a segment; whole-file concat = 0
 }
 ```
 
@@ -363,7 +362,7 @@ a verified neighbour) + gap detection, `frame.segment.{confidence,gap}`;
 correcting both sidecar alignment and displayed `dateTime` (§5).
 
 🔜 Planned: sidecar `.fit` UTC alignment (binary FIT decoder — the `.gpx`
-alignment path is done, §3); `sourceInPoint` (segment trimming);
-provider-private `setup` → shared resources; perf path (`toBuffer('raw')`/bgra,
-DoubleBuffer, GPU profiles). (Dashboard presentation layer — display smoothing +
-derived-`speed` — is implemented; see [`dashboard-spec.md`](dashboard-spec.md).)
+alignment path is done, §3); provider-private `setup` → shared resources; perf
+path (`toBuffer('raw')`/bgra, DoubleBuffer, GPU profiles). (Dashboard
+presentation layer — display smoothing + derived-`speed` — is implemented; see
+[`dashboard-spec.md`](dashboard-spec.md).)
