@@ -4,8 +4,10 @@ How the dashboard turns telemetry channels into gauge numbers, and how those
 numbers are kept stable. Companion to
 [`data-timeline-spec.md`](data-timeline-spec.md) (the data + timeline layer).
 
-**Status: §2 display smoothing and §3 derived-`speed` fallback are implemented ✅;
-the lib-side source reconstruction (§0/§4) remains proposed (🔜).**
+**Status: §2 display smoothing, §3 derived-`speed` fallback, and §4's source-axis
+elevation smoothing are implemented ✅ (see
+[`gpx-smoothing-integration.md`](gpx-smoothing-integration.md)); only narrowing
+`gradeWindowM` below its current 20 m default remains deferred (🔜).**
 
 ---
 
