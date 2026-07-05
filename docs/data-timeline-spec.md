@@ -157,11 +157,19 @@ Alignment uses the clock resolved at data-load time (explicit > `creation_time`)
 letting an authoritative sidecar clock override a weak *video* clock is the
 separate "best-clock-wins" item (§5).
 
-**Shared `Source` ✅.** The base video is probed **once** (cheap, format-
-agnostic ffprobe) and shared with the engine and every provider; per-stream
-*extraction* (`bytes('gpmd')`) is cached. So "does this video have GPS?" is a
-lookup on the shared probe, not a re-read. Core reads container fields; each
-provider does only its own format-specific extraction.
+**Shared `Source` — container probe only.** The base video's container is
+probed **once** (cheap, format-agnostic ffprobe) and shared with the engine and
+every provider, for config fields ffprobe can answer: `width`/`height`/`fps`/
+`durationSec`/`creationTime`, and the cheap `hasStream('gpmd')` check the CLI
+uses to route to `provider-gopro` vs `provider-gpx` vs no telemetry. `Source`
+also exposes a generic `bytes(streamTag)` for raw per-stream extraction
+(cached on the instance), but **`provider-gopro` does not use it**: it bypasses
+`Source` and hands the file path straight to `gpx-from-gopro`'s
+`readGoproTelemetry`, which does its **own** independent mp4 probe (mp4box) and
+its **own** cache (a `<file>.gpxcache.json` sidecar, see the lib's
+`docs/export-contract.md` §E) — a second, unrelated pass over the same file.
+So "does this video have GPS?" (routing) is a shared-probe lookup, but the GPS
+*extraction* itself is not shared or cached through `Source` at all.
 
 ---
 
