@@ -38,10 +38,19 @@
     "dashboard",
     "telemetry"
   ],
-  "license": "GPL-3.0-or-later",
+  "author": "zordius",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zordius/movie-layers.git"
+  },
+  "homepage": "https://github.com/zordius/movie-layers#readme",
+  "bugs": {
+    "url": "https://github.com/zordius/movie-layers/issues"
+  },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.0",
-    "gpx-from-gopro": "file:../gpx-stabilizer/packages/gopro",
-    "gpx-stabilizer": "file:../gpx-stabilizer/packages/core"
+    "gpx-from-gopro": "^0.3.0",
+    "gpx-stabilizer": "^0.3.0"
   }
 }

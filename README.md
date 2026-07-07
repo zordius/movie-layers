@@ -35,7 +35,52 @@ All multi-widget / multi-layer compositing happens in *our* canvas before the
 pipe. (Consequence: you can't place a layer *behind* the base video — fine for
 overlays/dashboards; out of scope here.)
 
-## Usage
+## CLI
+
+The floor is **stitch the clips into one video**; a telemetry **dashboard** is added
+on top when the footage carries GPS (embedded or a sidecar `.gpx`).
+
+Not published to npm yet — clone it and run the CLI straight out of the checkout with
+`npx` (no global install, no `npm link` needed):
+
+```bash
+git clone https://github.com/zordius/movie-layers.git
+cd movie-layers && npm install
+
+npx movie-layers GX065132.MP4                    # → GX065132-overlay.mp4 (GoPro auto-dashboard)
+npx movie-layers ./ride-folder                   # concat every clip in the folder (sorted)
+npx movie-layers GH010001.MP4 GH020001.MP4       # concat two clips into one timeline
+npx movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
+npx movie-layers GX065132.MP4 --map              # OpenStreetMap basemap under the track map
+npx movie-layers plain.mp4                       # no GPS → just stitch/encode (no dashboard)
+npx movie-layers clip.mp4 --snapshot --at 30 --open  # preview PNG at 30 s, then open it
+```
+
+`npx` finds `movie-layers` from the clone's own `package.json` — nothing to publish or
+install globally. Want a bare `movie-layers` command instead of the `npx` prefix? Run
+`npm link` (or `npm install -g .`) once from the clone.
+
+Inputs are clips and/or directories (a directory expands to its videos, sorted);
+several inputs concat into one timeline (same resolution / fps), telemetry
+offset-merged across the join. A clip with **no GPS and no `--gpx`** isn't an error —
+it's stitched/encoded as-is (with just the date/time readout if the clip has a
+clock). `--snapshot` (optionally `--at SEC`, default the middle) writes one PNG with
+the overlay composited over that frame — a fast preview without encoding the video.
+The CLI logs each stage: inputs probed, telemetry found, widgets, render progress,
+and the result with its value ranges.
+
+The dashboard is authored in a 1080-tall **logical** space and the engine's
+`scaleBaseline` normalizes it, so the gadgets sit at the same relative position at
+any resolution (1080p, 2.7K, 4K) — not just 1080p. The layout is aspect-aware: a
+landscape clip (16:9 / 4:3) gets a bottom row of gauges, a portrait / vertical clip
+stacks them in a left column so nothing overflows. Gauge values are smoothed by
+default (a critically-damped follow, so needles glide instead of snapping to noisy
+GPS); `--no-smooth` turns it off. `--help` lists every flag.
+
+## Library API
+
+`movie-layers` is also usable as a Node library — write your own `Layer` /
+`Provider` and drive the `Engine` directly:
 
 ```js
 import { Engine, Layer, defineProvider } from 'movie-layers'
@@ -58,47 +103,14 @@ await new Engine({
 }).render()
 ```
 
-Run the bundled demo:
+Run the bundled demo (from the same clone + `npm install` as above):
 
 ```bash
-npm install
 npm run example             # basic box demo      → out.mp4
 npm run example:svg         # SVG animation layer
 npm run example:dashboard   # gopro + dashboard widgets
 npm run example:gpx         # sidecar .gpx, UTC-aligned to the timeline
 ```
-
-## CLI
-
-The floor is **stitch the clips into one video**; a telemetry **dashboard** is added
-on top when the footage carries GPS (embedded or a sidecar `.gpx`).
-
-```bash
-movie-layers GX065132.MP4                    # → GX065132-overlay.mp4 (GoPro auto-dashboard)
-movie-layers ./ride-folder                   # concat every clip in the folder (sorted)
-movie-layers GH010001.MP4 GH020001.MP4       # concat two clips into one timeline
-movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
-movie-layers GX065132.MP4 --map              # OpenStreetMap basemap under the track map
-movie-layers plain.mp4                       # no GPS → just stitch/encode (no dashboard)
-movie-layers clip.mp4 --snapshot --at 30 --open  # preview PNG at 30 s, then open it
-```
-
-Inputs are clips and/or directories (a directory expands to its videos, sorted);
-several inputs concat into one timeline (same resolution / fps), telemetry
-offset-merged across the join. A clip with **no GPS and no `--gpx`** isn't an error —
-it's stitched/encoded as-is (with just the date/time readout if the clip has a
-clock). `--snapshot` (optionally `--at SEC`, default the middle) writes one PNG with
-the overlay composited over that frame — a fast preview without encoding the video.
-The CLI logs each stage: inputs probed, telemetry found, widgets, render progress,
-and the result with its value ranges.
-
-The dashboard is authored in a 1080-tall **logical** space and the engine's
-`scaleBaseline` normalizes it, so the gadgets sit at the same relative position at
-any resolution (1080p, 2.7K, 4K) — not just 1080p. The layout is aspect-aware: a
-landscape clip (16:9 / 4:3) gets a bottom row of gauges, a portrait / vertical clip
-stacks them in a left column so nothing overflows. Gauge values are smoothed by
-default (a critically-damped follow, so needles glide instead of snapping to noisy
-GPS); `--no-smooth` turns it off. `--help` lists every flag.
 
 ## Requirements
 
