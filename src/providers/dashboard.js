@@ -16,10 +16,12 @@ function shown(w, sample, dt) {
 
 // --- style (from sample.png) ---
 const ACCENT = '#83e000' // lime green icons / track dot
-const ACCENT_DIM = 'rgba(131, 224, 0, 0.4)' // dimmed ACCENT — the mini-map's "travelled long
-//   ago" trail, so recent travel (full ACCENT) reads as visually distinct from old travel
-const RECENT_TRAIL_SEC = 5 // mini-map: how far back "just travelled" (bright) extends before
-//   fading to ACCENT_DIM — the ring's own clip (not this) is what caps it if travel is faster
+const ACCENT_DIM = '#080' // the mini-map's "travelled long ago" trail, so recent travel
+//   (full ACCENT) reads as visually distinct from old travel
+const RECENT_TRAIL_SEC = 10 // mini-map: how far back "just travelled" extends, fading from
+//   full opacity (now) to RECENT_TRAIL_MIN_ALPHA (oldest end) — the ring's own clip (not
+//   this) is what caps its visible length if travel is faster than this window
+const RECENT_TRAIL_MIN_ALPHA = 0.3 // opacity at the oldest end of the recent-trail window
 const CYAN = '#4ec3f7' // "SPEED" label
 const BLUE = '#1e6fd0' // altitude bar remainder
 const PANEL = 'rgba(16,20,24,0.65)' // slightly more opaque than the original 0.5 — a panel that
@@ -234,21 +236,34 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
     }
     if (on) ctx.lineTo(cx, cy)
     ctx.stroke()
-    // just-travelled, full ACCENT — only the last RECENT_TRAIL_SEC of travel; drawn over
-    // the dim layer above. If travel is fast enough that this would reach past the ring,
-    // the ring's own clip (set above) caps its visible length, not this window.
-    ctx.strokeStyle = ACCENT
-    ctx.beginPath()
-    on = false
+    // just-travelled — the last RECENT_TRAIL_SEC of travel, drawn over the dim layer
+    // above, fading from full opacity (now) down to RECENT_TRAIL_MIN_ALPHA (the oldest
+    // end of the window). A single stroke can't vary alpha along its length, so this
+    // draws one short segment per sample pair, each with its own interpolated alpha. If
+    // travel is fast enough that this would reach past the ring, the ring's own clip
+    // (set above) caps its visible length, not this window.
     const recentStart = f.timeSec - RECENT_TRAIL_SEC
-    for (const s of series) {
-      if (!s.value || s.value.lat == null) continue
-      if (s.t < recentStart) continue
-      if (s.t > f.timeSec) break
-      on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
+    const recentPts = series.filter((s) => s.value && s.value.lat != null && s.t >= recentStart && s.t <= f.timeSec)
+    const recentSpan = f.timeSec - recentStart
+    for (let i = 1; i < recentPts.length; i++) {
+      const a = recentPts[i - 1]
+      const b = recentPts[i]
+      const frac = recentSpan > 0 ? Math.max(0, Math.min(1, (b.t - recentStart) / recentSpan)) : 1
+      const alpha = RECENT_TRAIL_MIN_ALPHA + (1 - RECENT_TRAIL_MIN_ALPHA) * frac
+      ctx.strokeStyle = `rgba(131, 224, 0, ${alpha.toFixed(3)})`
+      ctx.beginPath()
+      ctx.moveTo(px(a.value), py(a.value))
+      ctx.lineTo(px(b.value), py(b.value))
+      ctx.stroke()
     }
-    if (on) ctx.lineTo(cx, cy)
-    ctx.stroke()
+    if (recentPts.length) {
+      const last = recentPts[recentPts.length - 1]
+      ctx.strokeStyle = ACCENT // the closing stitch to the current dot itself — full opacity
+      ctx.beginPath()
+      ctx.moveTo(px(last.value), py(last.value))
+      ctx.lineTo(cx, cy)
+      ctx.stroke()
+    }
     ctx.restore()
     ctx.strokeStyle = CYAN // ring + ticks in the SPEED label colour
     ctx.lineWidth = 2.5
@@ -518,7 +533,7 @@ class Gradient extends Layer {
       ctx.fill()
       // 5 m horizontal gridlines, snapped to integer 5 m, clipped to the blue region
       ctx.clip()
-      ctx.strokeStyle = GRID
+      ctx.strokeStyle = WHITE
       ctx.lineWidth = 1
       const span = bh / 2 / vs // metres visible each side of centre
       ctx.beginPath()
