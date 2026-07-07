@@ -158,7 +158,8 @@ Done:
       (videotoolbox / nvenc / qsv / amf — `--no-hw` forces software, explicit
       `--profile` overrides), ffmpeg `--profile` (built-in + user JSON), **`--jobs N`**
       parallel-chunk render with lossless concat (a warm-up overlap keeps gauge
-      smoothing seamless across seams), `--range START:END` sub-clip render, and
+      smoothing seamless across seams), `--range START,END` sub-clip render (each side
+      is plain seconds or clock time, e.g. `1:23,2:00`), and
       `--widget-fps` (overlay draw rate, independent of output `--fps`)
 
 Planned:

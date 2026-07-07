@@ -89,6 +89,11 @@ export function concatCopy(files, output, { ffmpeg = 'ffmpeg', creationTime = nu
  * Backpressure is honoured in writeFrame(): when ffmpeg can't keep up the write
  * awaits 'drain' — that blocking IS flow control (ffmpeg saturated = optimal).
  */
+// the engine default when no --profile / hw auto-upgrade applies (libx264 / veryfast /
+// yuv420p, x264 default CRF 23) — exported so a caller (e.g. --bitrate) can start from
+// the same baseline instead of duplicating it.
+export const DEFAULT_OUTPUT_ARGS = ['-vcodec', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p']
+
 export class FfmpegPipe {
   constructor({
     width,
@@ -96,6 +101,7 @@ export class FfmpegPipe {
     fps = 30, // output framerate
     inputFps = 10, // rate at which we produce frames (gopro overlays at 10)
     baseVideos = [], // 0/1/N base video files (the bottom layer; >1 → concat)
+    baseVideoDurations = [], // each baseVideos[i]'s own duration (secs) — concat-list hint (below)
     output,
     ffmpeg = 'ffmpeg',
     pixfmt = 'rgba', // getImageData() gives straight-alpha RGBA
@@ -103,7 +109,7 @@ export class FfmpegPipe {
     seekSec = null, // `-ss` before the base `-i` (accurate seek) — render a sub-range (parallel chunks)
     clipSec = null, // output `-t`: cut the chunk to this many seconds (the overlay filter's
     //                length follows the longer base, so -shortest won't do it; -t is reliable)
-    outputArgs = ['-vcodec', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p'],
+    outputArgs = DEFAULT_OUTPUT_ARGS,
     filter = '[0:v][1:v]overlay',
     creationTime = null,
     logLevel = 'error', // ffmpeg -loglevel (quiet the banner/progress; errors still print). null = default
@@ -115,6 +121,7 @@ export class FfmpegPipe {
       fps,
       inputFps,
       baseVideos,
+      baseVideoDurations,
       output,
       ffmpeg,
       pixfmt,
@@ -133,9 +140,18 @@ export class FfmpegPipe {
   _baseInput() {
     if (this.baseVideos.length === 0) return []
     if (this.baseVideos.length === 1) return ['-i', this.baseVideos[0]]
-    // N → concat demuxer over a list file
+    // N → concat demuxer over a list file. A `duration` hint per entry (already probed by
+    // the engine) lets the demuxer compute each file's cumulative offset analytically —
+    // without it, seeking (`-ss`) deep into a multi-file concat can require opening/
+    // scanning every physical file first just to find where the target lands, which is
+    // slow for several large (multi-GB) source files.
     this._concatFile = join(tmpdir(), `ml-concat-${process.pid}-${seq++}.txt`)
-    const lines = this.baseVideos.map((f) => `file '${resolve(f)}'`).join('\n')
+    const lines = this.baseVideos
+      .map((f, i) => {
+        const dur = this.baseVideoDurations[i]
+        return dur != null ? `file '${resolve(f)}'\nduration ${dur}` : `file '${resolve(f)}'`
+      })
+      .join('\n')
     writeFileSync(this._concatFile, lines + '\n')
     return ['-f', 'concat', '-safe', '0', '-i', this._concatFile]
   }

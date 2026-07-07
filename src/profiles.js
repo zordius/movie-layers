@@ -76,6 +76,45 @@ export function detectHwEncoder(ffmpeg = 'ffmpeg') {
   return HW_ENCODERS.find((e) => have.has(e.codec)) ?? null
 }
 
+/**
+ * Hardware DECODE acceleration (`-hwaccel <name>` before the base `-i`), in preference
+ * order — independent of the output encoder/profile: it only speeds up reading the base
+ * video, not how the result gets encoded. `cuda`/`qsv` pair with their matching NVENC/QSV
+ * encoders; `videotoolbox` is macOS's one hwaccel regardless of CPU vendor (Intel or
+ * Apple Silicon — confirmed identical on both via `ffmpeg -hwaccels`).
+ */
+export const HW_DECODERS = [
+  { hwaccel: 'videotoolbox', label: 'VideoToolbox (Apple)' },
+  { hwaccel: 'cuda', label: 'CUDA (NVIDIA)' },
+  { hwaccel: 'qsv', label: 'QuickSync (Intel)' },
+]
+
+let _hwaccels = null
+/** Set of hwaccel names this ffmpeg build advertises (`ffmpeg -hwaccels`), cached. */
+export function listHwaccels(ffmpeg = 'ffmpeg') {
+  if (_hwaccels) return _hwaccels
+  let out = ''
+  try {
+    out = execFileSync(ffmpeg, ['-hide_banner', '-hwaccels'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    out = '' // ffmpeg missing / errored → no hwaccels detected, caller decodes in software
+  }
+  const set = new Set(
+    out
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l && l !== 'Hardware acceleration methods:'),
+  )
+  _hwaccels = set
+  return set
+}
+
+/** Best available hwaccel decode method, or null when none is present (→ software decode). */
+export function detectHwDecode(ffmpeg = 'ffmpeg') {
+  const have = listHwaccels(ffmpeg)
+  return HW_DECODERS.find((d) => have.has(d.hwaccel)) ?? null
+}
+
 /** Default user-profile file: `$XDG_CONFIG_HOME|~/.config/movie-layers/ffmpeg-profiles.json`. */
 export function defaultProfileFile() {
   const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config')

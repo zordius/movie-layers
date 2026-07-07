@@ -20,13 +20,13 @@ import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { Engine, Source } from './index.js'
-import { concatCopy } from './ffmpeg.js'
+import { concatCopy, DEFAULT_OUTPUT_ARGS } from './ffmpeg.js'
 import gopro from './providers/gopro.js'
 import gpx from './providers/gpx.js'
 import dashboard from './providers/dashboard.js'
 import datetime from './providers/datetime.js'
 import mapProvider from './providers/map.js'
-import { resolveProfile, detectHwEncoder, BUILTIN_PROFILES } from './profiles.js'
+import { resolveProfile, detectHwEncoder, detectHwDecode, BUILTIN_PROFILES } from './profiles.js'
 
 const USAGE = `movie-layers — glue clips into one video, with a telemetry overlay
 
@@ -34,7 +34,9 @@ usage:
   movie-layers <video | dir> [<video | dir> ...] [options]
 
 options:
-  --out FILE            output path (default: <first-video>-overlay.mp4 / .png, same dir)
+  --out FILE|DIR        output path (default: <first-video>-overlay.mp4 / .png, same dir);
+                        an existing directory keeps the default filename, redirecting
+                        just the output location
   --snapshot            render one preview PNG instead of a video
   --at SEC              snapshot time in seconds (default: the middle of the clip)
   --open                open the output when done (in the default viewer)
@@ -45,13 +47,16 @@ options:
                         = fewer canvas frames → faster render, base video stays --fps
   --jobs N              render in N parallel processes + lossless concat (single clip
                         with an overlay; near-Nx faster until the encode floor)
-  --range START:END     render only seconds [START,END) of the clip (one chunk). A chunk
-                        whose START>0 warms up gauge smoothing first, so hand-split +
-                        concat seams don't jump. Boundaries should meet (0:10 then 10:20).
+  --range START,END     render only seconds [START,END) of the clip (one chunk). Each side
+                        is plain seconds or clock time (1:23 = 1m23s, 1:02:03 = 1h02m03s).
+                        A chunk whose START>0 warms up gauge smoothing first, so hand-split
+                        + concat seams don't jump. Boundaries should meet (0,10 then 10,20).
   --profile NAME        ffmpeg encode profile (built-in: ${Object.keys(BUILTIN_PROFILES).sort().join(', ')};
                         or a name from ~/.config/movie-layers/ffmpeg-profiles.json)
   --profile-file PATH   profiles JSON path (default: ~/.config/movie-layers/ffmpeg-profiles.json)
-  --no-hw               disable the auto hardware-encoder upgrade (use software x264)
+  --bitrate RATE        override the output -b:v (e.g. 8.5M, 8500k) — takes precedence
+                        over --profile and the hw auto-upgrade's own fixed bitrate
+  --no-hw               disable auto hardware acceleration (software decode + x264 encode)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
   --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
   --no-datetime         omit the date/time readout
@@ -95,6 +100,51 @@ const VIDEO_EXT = new Set(['.mp4', '.mov', '.m4v', '.mkv'])
 function fmtDur(sec) {
   sec = Math.max(0, Math.round(sec))
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
+}
+
+/** Parse one `--range` endpoint: plain seconds ("125", "12.5") or clock time ("1:23", "1:02:03"). */
+function parseTimeSpec(s) {
+  if (!s.includes(':')) return Number(s)
+  const parts = s.split(':').map(Number)
+  if (parts.length < 2 || parts.length > 3 || parts.some(Number.isNaN)) return NaN
+  return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1]
+}
+
+/** Parse a numeric CLI flag; exits with a clear reason on invalid (or non-positive, if required) input. */
+function numFlag(name, raw, { positive = false } = {}) {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || (positive && n <= 0)) {
+    console.error(`error: --${name} "${raw}" is not a valid${positive ? ' positive' : ''} number`)
+    process.exit(1)
+  }
+  return n
+}
+
+/**
+ * Override (or append) `-b:v` in an ffmpeg output-args array — this is how `--bitrate`
+ * takes precedence over whatever rate control a `--profile` or the hw auto-upgrade
+ * already picked. Also drops any existing `-crf` (a profile like `hq` sets one) — the
+ * two rate-control modes don't coexist, and an explicit bitrate should fully replace it.
+ */
+function withBitrate(outputArgs, bitrate) {
+  const out = []
+  for (let i = 0; i < outputArgs.length; i++) {
+    if (outputArgs[i] === '-b:v' || outputArgs[i] === '-crf') {
+      i++ // drop the flag AND its value
+      continue
+    }
+    out.push(outputArgs[i])
+  }
+  out.push('-b:v', bitrate)
+  return out
+}
+
+/** Human-readable byte rate: `512KB/s` / `3.4MB/s`. */
+function fmtRate(bytesPerSec) {
+  const b = Math.max(0, bytesPerSec)
+  if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)}MB/s`
+  if (b >= 1024) return `${(b / 1024).toFixed(0)}KB/s`
+  return `${b.toFixed(0)}B/s`
 }
 
 /** Open a file in the OS default viewer (`--open`), detached so it doesn't block. */
@@ -197,7 +247,7 @@ function chunkArgv(rawArgv) {
 
 /**
  * Parallel render: split [0,duration) into `jobs` frame-aligned ranges, render each in
- * its own CLI child process (`--range start:end`), then losslessly concat the chunks.
+ * its own CLI child process (`--range start,end`), then losslessly concat the chunks.
  * Near-Nx faster (the draw is single-threaded per process) until the encode floor.
  * Seam note: per-chunk gauge display-smoothing restarts at each boundary (the first
  * sample snaps, so no sweep-from-zero — just a velocity reset; the basemap/halo/clock
@@ -218,7 +268,7 @@ async function renderParallel({ rawArgv, jobs, out, durationSec, inputFps, log }
   let done = 0
   await Promise.all(
     ranges.map(([s, e], i) => {
-      const argv = [cliPath, ...base, '--range', `${s}:${e}`, '--out', chunks[i], '--quiet']
+      const argv = [cliPath, ...base, '--range', `${s},${e}`, '--out', chunks[i], '--quiet']
       return new Promise((res, rej) => {
         const p = spawn(process.execPath, argv, { stdio: ['ignore', 'ignore', 'inherit'] })
         p.on('error', rej)
@@ -257,13 +307,28 @@ async function main() {
   }
   const input = files[0] // first clip drives naming / probing
   const ext = args.snapshot ? 'png' : 'mp4'
-  const out =
-    args.out ?? join(dirname(input), `${basename(input, extname(input))}-overlay.${ext}`)
-  const fps = args.fps ? Number(args.fps) : 30
-  const widgetFps = args['widget-fps'] ? Number(args['widget-fps']) : null // overlay draw rate; null = = fps
-  const range = args.range ? args.range.split(':').map(Number) : null // chunk render window [start,end] seconds
-  const jobs = args.jobs ? Math.max(1, Math.floor(Number(args.jobs))) : 1
-  const baseline = args.baseline ? Number(args.baseline) : 1080
+  const defaultName = `${basename(input, extname(input))}-overlay.${ext}`
+  // --out an existing directory → keep the default filename, just redirect where it lands
+  let outIsDir = false
+  if (args.out) {
+    try {
+      outIsDir = statSync(args.out).isDirectory()
+    } catch {
+      /* doesn't exist yet — treat as a literal file path */
+    }
+  }
+  const out = !args.out ? join(dirname(input), defaultName) : outIsDir ? join(args.out, defaultName) : args.out
+  const requestedFps = args.fps ? numFlag('fps', args.fps, { positive: true }) : null // resolved after the probe (default follows the source)
+  const widgetFps = args['widget-fps'] ? numFlag('widget-fps', args['widget-fps'], { positive: true }) : null // overlay draw rate; null = = fps
+  const range = args.range ? args.range.split(',').map((s) => parseTimeSpec(s.trim())) : null // chunk render window [start,end] seconds
+  if (range && range.some((n) => !Number.isFinite(n))) {
+    console.error(
+      `error: --range "${args.range}" — expected START,END in seconds or clock time (e.g. --range 1:23,2:00)`,
+    )
+    process.exit(1)
+  }
+  const jobs = args.jobs ? Math.max(1, Math.floor(numFlag('jobs', args.jobs, { positive: true }))) : 1
+  const baseline = args.baseline ? numFlag('baseline', args.baseline, { positive: true }) : 1080
   const withDatetime = !args.noDatetime
   const log = args.quiet ? () => {} : (...a) => console.log(...a) // --quiet silences stdout info/progress
 
@@ -281,6 +346,10 @@ async function main() {
     console.error(`error: cannot read ${input} — ${e.message}`)
     process.exit(1)
   }
+  // default --fps follows the source's own rate (don't discard real motion samples by
+  // always downsampling to 30), clamped to a sane [30,60] band — no lower than the old
+  // default, no higher than YouTube's high-frame-rate ceiling
+  const fps = requestedFps ?? Math.min(60, Math.max(30, info?.fps ?? 30))
   const label = files.length > 1 ? `${files.length} clips` : basename(input)
   const dims = info?.width ? `${info.width}x${info.height}` : '?'
   log(`movie-layers: ${label}, ${dims}${info?.fps ? ` @ ${info.fps.toFixed(2)}fps` : ''}`)
@@ -307,7 +376,7 @@ async function main() {
     ? {
         onLog: log,
         ...(args['map-cache'] ? { cacheDir: args['map-cache'] } : {}),
-        ...(args['map-zoom'] ? { zoom: Number(args['map-zoom']) } : {}),
+        ...(args['map-zoom'] ? { zoom: numFlag('map-zoom', args['map-zoom']) } : {}),
       }
     : null
   if (args.map && !dataProvider) log('  note: --map needs GPS telemetry — no basemap drawn')
@@ -315,6 +384,7 @@ async function main() {
   // Encoder resolution, precedence: explicit --profile > auto hardware-encoder upgrade
   // (detection-based, default on) > software x264. `--no-hw` disables the auto step; a
   // chunk (--range) inherits this via the passed-through argv. Snapshots don't encode.
+  // Decode-side hw accel (below) is a separate, independent auto-detect step.
   let ffmpegOptions = {}
   let enc = null
   if (args.profile) {
@@ -328,6 +398,29 @@ async function main() {
     }
   }
   if (enc) ffmpegOptions = { inputArgs: enc.input, outputArgs: enc.output, ...(enc.filter ? { filter: enc.filter } : {}) }
+
+  // --bitrate overrides whatever rate control the above picked (profile / hw
+  // auto-upgrade / plain default) — always applied last, regardless of source.
+  if (args.bitrate) {
+    if (!/^\d+(\.\d+)?[kKmM]?$/.test(args.bitrate)) {
+      console.error(`error: --bitrate "${args.bitrate}" — expected a value like 8.5M, 8500k, or 8500000`)
+      process.exit(1)
+    }
+    const overridden = args.profile ? `profile "${args.profile}"` : enc ? 'hw auto-upgrade' : 'default'
+    ffmpegOptions = { ...ffmpegOptions, outputArgs: withBitrate(ffmpegOptions.outputArgs ?? DEFAULT_OUTPUT_ARGS, args.bitrate) }
+    log(`  bitrate: --bitrate ${args.bitrate} overrides ${overridden}`)
+  }
+
+  // Decode-side hardware acceleration — independent of the output encoder/profile choice
+  // above (it only speeds up reading the base video). Skipped if an explicit --profile
+  // already set its own `-hwaccel` (e.g. `nvgpu`'s `-hwaccel nvdec` — respect that).
+  if (!args['no-hw'] && !args.snapshot && !(ffmpegOptions.inputArgs ?? []).includes('-hwaccel')) {
+    const dec = detectHwDecode()
+    if (dec) {
+      ffmpegOptions = { ...ffmpegOptions, inputArgs: ['-hwaccel', dec.hwaccel, ...(ffmpegOptions.inputArgs ?? [])] }
+      log(`  decode: hw accel → ${dec.label} (${dec.hwaccel})`)
+    }
+  }
 
   // providers + layout (full dashboard with data; datetime-or-nothing without)
   const providers = dataProvider
@@ -368,7 +461,7 @@ async function main() {
     // (~1.5 s ≈ 4× the 0.35 s smoothTime; clamped so it never seeks before 0)
     renderWarmupSec: range && range[0] > 0 ? Math.min(range[0], 1.5) : 0,
     scaleBaseline: baseline, // ratio fix: normalize gadget positions to a 1080 logical space
-    clockOffsetSec: args['clock-offset'] ? Number(args['clock-offset']) : 0,
+    clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
     gaugeSmoothing: !args.noSmooth,
     providers,
     layout,
@@ -394,14 +487,23 @@ async function main() {
   log(`widgets: ${summary.layers.join(' · ') || '(none — stitch only)'}`)
   if (args.profile && !args.snapshot && summary.layers.length === 0)
     console.warn(`note: --profile ${args.profile} ignored — a pure stitch is a stream copy (no re-encode)`)
-  if (args.jobs && Number(args.jobs) > 1 && !args.range && summary.layers.length === 0)
+  if (args.bitrate && !args.snapshot && summary.layers.length === 0)
+    console.warn(`note: --bitrate ${args.bitrate} ignored — a pure stitch is a stream copy (no re-encode)`)
+  if (jobs > 1 && !args.range && summary.layers.length === 0)
     console.warn(`note: --jobs ignored — a pure stitch is already one fast stream copy`)
+
+  // --range narrows what actually gets rendered; reflect that window in the "rendering"/
+  // "done" lines below instead of the full clip's totals — otherwise these headline
+  // numbers contradict the live per-frame progress line, which counts against the window
+  // (engine.js render()'s `totalFrames`), not the whole timeline.
+  const renderDurationSec = range ? (range[1] ?? summary.durationSec) - (range[0] ?? 0) : summary.durationSec
+  const renderFrameCount = range ? Math.max(1, Math.round(renderDurationSec * (widgetFps ?? fps))) : summary.frameCount
 
   // ── Stage 3: do it ───────────────────────────────────────────────────────────
   const logCmd = (cmd) => log(`  $ ${cmd.join(' ')}`)
   const t0 = Date.now()
   if (args.snapshot) {
-    const at = args.at != null ? Number(args.at) : null
+    const at = args.at != null ? numFlag('at', args.at) : null
     log(`snapshot @ ${at != null ? `${at}s` : 'middle'} → ${out}`)
     await engine.snapshot({ atSec: at, output: out, scene, onCommand: logCmd })
   } else if (summary.layers.length === 0) {
@@ -410,21 +512,64 @@ async function main() {
     log(`stitching → ${out}`)
     await engine.render({ scene, onCommand: logCmd })
   } else {
-    log(`rendering → ${out}  (${summary.frameCount} frames @ ${fps}fps)`)
+    log(`rendering → ${out}  (${renderFrameCount} frames @ ${fps}fps)`)
     const tty = process.stdout.isTTY
+    // input-side "read" is an ESTIMATE (ffmpeg exposes no real bytes-read-from-input
+    // counter, and there's no portable OS I/O counter — /proc/pid/io doesn't exist on
+    // macOS): assume roughly-constant bitrate and scale total input size by frame
+    // progress. Output-side "write" is the real thing — just stat the file being
+    // encoded.
+    const totalInputBytes = files.reduce((sum, f) => {
+      try {
+        return sum + statSync(f).size
+      } catch {
+        return sum
+      }
+    }, 0)
+    // `i/n` (below) is relative to the RENDER WINDOW, not the whole file — scale the
+    // estimate's denominator the same way, or a short --range on a long clip massively
+    // overshoots (dividing the whole file's bytes by just the window's frame count).
+    const inputBytes =
+      summary.durationSec > 0 ? totalInputBytes * (renderDurationSec / summary.durationSec) : totalInputBytes
     let pct = -1
     let shown = -1
+    let lastRateT = t0
+    let lastReadEst = 0
+    let lastWriteBytes = 0
+    let readRate = 0
+    let writeRate = 0
     await engine.render({
       scene,
       onCommand: logCmd,
       onProgress: (i, n) => {
         if (args.quiet) return
         const p = Math.floor((i / n) * 100)
-        if (p === pct) return
+        const now = Date.now()
+        const dueForRate = now - lastRateT >= 1000 || i === n
+        if (p === pct && !dueForRate) return
+        if (dueForRate) {
+          const dt = (now - lastRateT) / 1000
+          const readEst = (i / n) * inputBytes
+          let writeBytes = lastWriteBytes
+          try {
+            writeBytes = statSync(out).size
+          } catch {
+            /* output file not created yet */
+          }
+          if (dt > 0) {
+            readRate = (readEst - lastReadEst) / dt
+            writeRate = (writeBytes - lastWriteBytes) / dt
+          }
+          lastReadEst = readEst
+          lastWriteBytes = writeBytes
+          lastRateT = now
+        }
         pct = p
-        const el = (Date.now() - t0) / 1000
+        const el = (now - t0) / 1000
         const eta = i > 0 ? (el / i) * (n - i) : 0
-        const line = `${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total`
+        const line =
+          `${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total` +
+          `  ·  read~${fmtRate(readRate)}  write ${fmtRate(writeRate)}`
         if (tty) {
           process.stdout.write(`\r  ${line}    `) // one updating line in a terminal
         } else if (p % 10 === 0 && p !== shown) {
@@ -437,7 +582,7 @@ async function main() {
   }
 
   // ── Stage 4: done ────────────────────────────────────────────────────────────
-  log(`done: ${out}  (${summary.durationSec.toFixed(1)}s, ${dims})  in ${fmtDur((Date.now() - t0) / 1000)}`)
+  log(`done: ${out}  (${renderDurationSec.toFixed(1)}s, ${dims})  in ${fmtDur((Date.now() - t0) / 1000)}`)
   const c = summary.channels
   const bits = []
   if (c.speed?.max != null) bits.push(`speed ≤ ${c.speed.max.toFixed(1)} ${c.speed.unit}`)

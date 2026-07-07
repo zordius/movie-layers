@@ -18,7 +18,9 @@ function shown(w, sample, dt) {
 const ACCENT = '#83e000' // lime green icons / track dot
 const CYAN = '#4ec3f7' // "SPEED" label
 const BLUE = '#1e6fd0' // altitude bar remainder
-const PANEL = 'rgba(16,20,24,0.5)'
+const PANEL = 'rgba(16,20,24,0.65)' // slightly more opaque than the original 0.5 — a panel that
+//   blends less with the shifting base video underneath is more temporally stable, which
+//   the codec compresses more cleanly (less ringing at the text edges on top of it)
 const WHITE = '#ffffff'
 const GRAY = '#8a929b' // provisional value (pre-fix / no signal) — dimmed
 const GRID = 'rgba(255,255,255,0.15)' // track-map grid lines
@@ -249,6 +251,12 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
       ctx.arc(cx, cy, 5 + 12 * phase, 0, Math.PI * 2)
       ctx.fill()
     }
+    // white backing ring, slightly larger than the dot — the travelled path underneath
+    // is drawn in the same ACCENT green, so the dot needs contrast to stay visible on it
+    ctx.fillStyle = WHITE
+    ctx.beginPath()
+    ctx.arc(cx, cy, 7, 0, Math.PI * 2)
+    ctx.fill()
     ctx.fillStyle = sg.valid ? ACCENT : GRAY
     ctx.beginPath()
     ctx.arc(cx, cy, 5, 0, Math.PI * 2)
@@ -458,7 +466,7 @@ class Gradient extends Layer {
       const N = bw
       const ys = []
       for (let i = 0; i <= N; i++) ys.push(scalarAt(alt, f.timeSec - half + (i / N) * 2 * half))
-      const vs = 4 // fixed scale: 1 m = 4 px (no dynamic zoom)
+      const vs = 2 // fixed scale: 1 m = 2 px (no dynamic zoom)
       ctx.save()
       ctx.beginPath()
       ctx.rect(bx, by, bw, bh)
@@ -487,13 +495,13 @@ class Gradient extends Layer {
       }
       ctx.fillStyle = BLUE
       ctx.fill()
-      // 2 m horizontal gridlines, snapped to integer 2 m, clipped to the blue region
+      // 5 m horizontal gridlines, snapped to integer 5 m, clipped to the blue region
       ctx.clip()
       ctx.strokeStyle = GRID
       ctx.lineWidth = 1
       const span = bh / 2 / vs // metres visible each side of centre
       ctx.beginPath()
-      for (let m = Math.ceil((cur - span) / 2) * 2; m <= cur + span; m += 2) {
+      for (let m = Math.ceil((cur - span) / 5) * 5; m <= cur + span; m += 5) {
         const py = ccy - (m - cur) * vs // no pixel-snap: must glide in sync with the fill
         ctx.moveTo(bx, py)
         ctx.lineTo(bx + bw, py)

@@ -172,8 +172,11 @@ export class Engine {
       return { durationSec, startUtc, clockSource }
     })
 
-    // base video file list for ffmpeg (concat when >1)
+    // base video file list for ffmpeg (concat when >1), with each one's own duration
+    // (already probed above) — lets the concat demuxer compute seek offsets analytically
+    // instead of opening every physical file just to find where a `-ss` target lands.
     this.baseVideos = specs.filter((s) => s.file).map((s) => s.file)
+    this.baseVideoDurations = specs.map((s, i) => (s.file ? this.segments[i].durationSec : null)).filter((d) => d != null)
   }
 
   /**
@@ -480,6 +483,7 @@ export class Engine {
       fps: this.fps,
       inputFps: this.inputFps,
       baseVideos: this.baseVideos,
+      baseVideoDurations: this.baseVideoDurations,
       output: this.output,
       pixfmt: 'rgba',
       creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
@@ -492,6 +496,13 @@ export class Engine {
 
     const writeStart = this._renderStartSec // first emitted frame; null = from the top
     const drawStart = writeStart != null ? writeStart - this._renderWarmupSec : null
+    // `onProgress` counts against the frames THIS call will actually write — the render
+    // WINDOW (writeStart..renderEndSec), not scene.timeline.frameCount (the full clip).
+    // Otherwise a --range near the start of a long clip reports a percent that barely
+    // moves (e.g. stuck at "4%") because the denominator is the whole timeline.
+    const windowEndSec = this._renderEndSec ?? scene.timeline.durationSec
+    const totalFrames = Math.max(1, Math.round((windowEndSec - (writeStart ?? 0)) * this.inputFps))
+    let written = 0
     try {
       for (const step of scene.timeline.steps()) {
         if (drawStart != null && step.timeSec < drawStart) continue
@@ -508,7 +519,7 @@ export class Engine {
         if (writeStart != null && step.timeSec < writeStart) continue
         const { data: pixels } = ctx.getImageData(0, 0, this.width, this.height)
         await pipe.writeFrame(Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength))
-        onProgress?.(step.index + 1, scene.timeline.frameCount)
+        onProgress?.(++written, totalFrames)
       }
     } finally {
       await pipe.finish()
