@@ -16,6 +16,10 @@ function shown(w, sample, dt) {
 
 // --- style (from sample.png) ---
 const ACCENT = '#83e000' // lime green icons / track dot
+const ACCENT_DIM = 'rgba(131, 224, 0, 0.4)' // dimmed ACCENT — the mini-map's "travelled long
+//   ago" trail, so recent travel (full ACCENT) reads as visually distinct from old travel
+const RECENT_TRAIL_SEC = 5 // mini-map: how far back "just travelled" (bright) extends before
+//   fading to ACCENT_DIM — the ring's own clip (not this) is what caps it if travel is faster
 const CYAN = '#4ec3f7' // "SPEED" label
 const BLUE = '#1e6fd0' // altitude bar remainder
 const PANEL = 'rgba(16,20,24,0.65)' // slightly more opaque than the original 0.5 — a panel that
@@ -218,11 +222,28 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc) {
       on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
     }
     ctx.stroke()
-    ctx.strokeStyle = ACCENT
+    // travelled-so-far, dim — the "long ago" base layer (still distinct from the
+    // untravelled GRAY track, but duller than the recent highlight drawn next)
+    ctx.strokeStyle = ACCENT_DIM
     ctx.beginPath()
     on = false
     for (const s of series) {
       if (!s.value || s.value.lat == null) continue
+      if (s.t > f.timeSec) break
+      on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
+    }
+    if (on) ctx.lineTo(cx, cy)
+    ctx.stroke()
+    // just-travelled, full ACCENT — only the last RECENT_TRAIL_SEC of travel; drawn over
+    // the dim layer above. If travel is fast enough that this would reach past the ring,
+    // the ring's own clip (set above) caps its visible length, not this window.
+    ctx.strokeStyle = ACCENT
+    ctx.beginPath()
+    on = false
+    const recentStart = f.timeSec - RECENT_TRAIL_SEC
+    for (const s of series) {
+      if (!s.value || s.value.lat == null) continue
+      if (s.t < recentStart) continue
       if (s.t > f.timeSec) break
       on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
     }

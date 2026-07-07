@@ -497,7 +497,8 @@ async function main() {
   // numbers contradict the live per-frame progress line, which counts against the window
   // (engine.js render()'s `totalFrames`), not the whole timeline.
   const renderDurationSec = range ? (range[1] ?? summary.durationSec) - (range[0] ?? 0) : summary.durationSec
-  const renderFrameCount = range ? Math.max(1, Math.round(renderDurationSec * (widgetFps ?? fps))) : summary.frameCount
+  const renderFps = widgetFps ?? fps
+  const renderFrameCount = range ? Math.max(1, Math.round(renderDurationSec * renderFps)) : summary.frameCount
 
   // ── Stage 3: do it ───────────────────────────────────────────────────────────
   const logCmd = (cmd) => log(`  $ ${cmd.join(' ')}`)
@@ -567,9 +568,12 @@ async function main() {
         pct = p
         const el = (now - t0) / 1000
         const eta = i > 0 ? (el / i) * (n - i) : 0
+        // encode speed as a multiple of realtime — e.g. an hour of footage encoded in
+        // 30 real minutes is "2.00x" (video-time processed so far ÷ real elapsed time)
+        const speedX = el > 0 ? i / renderFps / el : 0
         const line =
           `${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total` +
-          `  ·  read~${fmtRate(readRate)}  write ${fmtRate(writeRate)}`
+          `  ·  ${speedX.toFixed(2)}x  ·  read~${fmtRate(readRate)}  write ${fmtRate(writeRate)}`
         if (tty) {
           process.stdout.write(`\r  ${line}    `) // one updating line in a terminal
         } else if (p % 10 === 0 && p !== shown) {
@@ -582,7 +586,9 @@ async function main() {
   }
 
   // ── Stage 4: done ────────────────────────────────────────────────────────────
-  log(`done: ${out}  (${renderDurationSec.toFixed(1)}s, ${dims})  in ${fmtDur((Date.now() - t0) / 1000)}`)
+  const totalElapsedSec = (Date.now() - t0) / 1000
+  const avgSpeedX = !args.snapshot && totalElapsedSec > 0 ? `  (${(renderDurationSec / totalElapsedSec).toFixed(2)}x)` : ''
+  log(`done: ${out}  (${renderDurationSec.toFixed(1)}s, ${dims})  in ${fmtDur(totalElapsedSec)}${avgSpeedX}`)
   const c = summary.channels
   const bits = []
   if (c.speed?.max != null) bits.push(`speed ≤ ${c.speed.max.toFixed(1)} ${c.speed.unit}`)
