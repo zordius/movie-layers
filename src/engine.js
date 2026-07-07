@@ -61,6 +61,11 @@ export class Engine {
     gaugeSmoothing = true, // default presentation smoothing for gauge widgets (dashboard-spec §2)
     layout = [], // [{ type, ...config }] resolved against providers
     ffmpegOptions = {},
+    precomputed = null, // { width, height, baseVideos, baseVideoDurations, segments, timezone,
+    //   channels } from a prior prepareData() call — skips probing + provider data-loading +
+    //   clock resolution entirely and uses this instead (the CLI's --jobs parent precomputes
+    //   this once and hands the same bundle to every chunk, instead of each chunk redoing
+    //   potentially expensive per-file extraction, e.g. provider-gopro's GPS parsing)
   }) {
     this.fps = fps
     this.inputFps = inputFps ?? fps
@@ -80,6 +85,7 @@ export class Engine {
     this._gaugeSmoothing = gaugeSmoothing
     this.layoutSpec = layout
     this.ffmpegOptions = ffmpegOptions
+    this._precomputed = precomputed
 
     // raw config — resolved (possibly via probe) in render()
     this._width = width
@@ -108,6 +114,19 @@ export class Engine {
    * confidence machinery (spec §5) is deferred (needs provider-gopro).
    */
   async _resolve() {
+    // precomputed bundle (--jobs parent already resolved this once) — skip probing
+    // entirely. `sources` stays empty: nothing on the render() path needs it (only
+    // snapshot()'s extractFrame does, and precomputed mode is render()-only).
+    if (this._precomputed) {
+      const p = this._precomputed
+      this.width = p.width
+      this.height = p.height
+      this.segments = p.segments
+      this.baseVideos = p.baseVideos
+      this.baseVideoDurations = p.baseVideoDurations
+      this.sources = []
+      return
+    }
     // segment specs: explicit segments > single baseVideo > synthetic (durationSec)
     let specs
     if (this._segmentsOpt) {
@@ -294,15 +313,17 @@ export class Engine {
   }
 
   /**
-   * Shared setup for render() and snapshot(): resolve config, load data, resolve
-   * clocks, build + validate layers, prep the canvas / timeline / scale. No ffmpeg,
-   * no drawing. Returns the pieces both paths draw with.
+   * Resolve config + load all provider data + resolve clocks (spec §5) — everything
+   * needed to render EXCEPT the canvas/layers/timeline (those are cheap and stay in
+   * _scene(); this is the potentially-expensive half, e.g. provider-gopro's per-file GPS
+   * extraction). Returns a plain, JSON-serializable bundle.
+   *
+   * Exists as its own method so the CLI's `--jobs` parent can call it ONCE and hand the
+   * same bundle to every chunk (via the `precomputed` constructor option) instead of each
+   * chunk redoing potentially expensive extraction redundantly.
    */
-  async _scene() {
+  async prepareData() {
     await this._resolve()
-
-    const canvas = createCanvas(this.width, this.height)
-    const ctx = canvas.getContext('2d')
 
     // Per-segment timing for ALL segments (file-bearing AND fileless), so a
     // sidecar provider can UTC-align its samples against the timeline even with no
@@ -332,6 +353,47 @@ export class Engine {
     // into each segment's anchor — done here, after data load and before the
     // ffmpeg anchor + Timeline snapshot read segment.startUtc.
     this._resolveClocks(dataset)
+
+    return {
+      width: this.width,
+      height: this.height,
+      baseVideos: this.baseVideos,
+      baseVideoDurations: this.baseVideoDurations,
+      segments: this.segments,
+      timezone: this.timezone,
+      channels: Object.fromEntries(
+        dataset.list().map((name) => {
+          const c = dataset.channels.get(name)
+          // maxGap defaults to Infinity, which JSON.stringify silently turns into `null` —
+          // null it explicitly here so the bundle round-trips through a file (--jobs
+          // children read it back with `?? Infinity` below) without a silent meaning change
+          return [name, { unit: c.unit, maxGap: Number.isFinite(c.maxGap) ? c.maxGap : null, samples: c.samples }]
+        }),
+      ),
+    }
+  }
+
+  /**
+   * Shared setup for render() and snapshot(): resolve config, load data, resolve
+   * clocks, build + validate layers, prep the canvas / timeline / scale. No ffmpeg,
+   * no drawing. Returns the pieces both paths draw with.
+   */
+  async _scene() {
+    const bundle = this._precomputed ?? (await this.prepareData())
+    this.width = bundle.width
+    this.height = bundle.height
+    this.baseVideos = bundle.baseVideos
+    this.baseVideoDurations = bundle.baseVideoDurations
+    this.segments = bundle.segments
+    this.timezone = bundle.timezone
+
+    const canvas = createCanvas(this.width, this.height)
+    const ctx = canvas.getContext('2d')
+
+    const dataset = new DataSet()
+    for (const [name, ch] of Object.entries(bundle.channels)) {
+      dataset.addChannel(name, ch.unit, ch.samples, ch.maxGap ?? Infinity)
+    }
 
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {

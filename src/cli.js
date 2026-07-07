@@ -15,7 +15,8 @@
 // `scaleBaseline` normalizes it, so the gadgets sit correctly at any resolution /
 // aspect ratio (2.7K, 4K, 4:3, …), not just 1080p.
 import { spawn } from 'node:child_process'
-import { readdirSync, realpathSync, statSync, unlinkSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -147,6 +148,18 @@ function fmtRate(bytesPerSec) {
   return `${b.toFixed(0)}B/s`
 }
 
+/**
+ * The shared progress-line text — used identically by the single-process render path and
+ * the `--jobs` parallel path (whose numbers are the same shape, just summed across chunks),
+ * so the two never drift apart in what they report.
+ */
+function progressLine(p, i, n, el, eta, speedX, readRate, writeRate) {
+  return (
+    `${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total` +
+    `  ·  ${speedX.toFixed(2)}x  ·  read~${fmtRate(readRate)}  write ${fmtRate(writeRate)}`
+  )
+}
+
 /** Open a file in the OS default viewer (`--open`), detached so it doesn't block. */
 function openFile(path) {
   const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'
@@ -252,8 +265,15 @@ function chunkArgv(rawArgv) {
  * Seam note: per-chunk gauge display-smoothing restarts at each boundary (the first
  * sample snaps, so no sweep-from-zero — just a velocity reset; the basemap/halo/clock
  * are global and continuous).
+ *
+ * Live progress: each chunk is `--quiet` (no console output of its own) but still reports
+ * its frame index to us over IPC (throttled to ~1/sec, minimal payload — just `i`; we
+ * already know each chunk's own total frame count from the range we assigned it, and can
+ * stat each chunk's own output file ourselves for byte rates), so we can print ONE
+ * aggregate progress line in the exact same shape `progressLine()` prints for a
+ * single-process render, just summed across chunks.
  */
-async function renderParallel({ rawArgv, jobs, out, durationSec, inputFps, log }) {
+async function renderParallel({ rawArgv, jobs, out, durationSec, inputFps, inputBytes, precomputedPath, quiet, log }) {
   const Fi = Math.max(1, Math.round(durationSec * inputFps)) // total overlay frames
   const bound = []
   for (let i = 0; i <= jobs; i++) bound.push(Math.round((i * Fi) / jobs))
@@ -263,32 +283,92 @@ async function renderParallel({ rawArgv, jobs, out, durationSec, inputFps, log }
   const base = chunkArgv(rawArgv)
   const cliPath = fileURLToPath(import.meta.url)
   const chunks = ranges.map((_, i) => join(dirname(out), `.ml-chunk-${process.pid}-${i}-${basename(out)}`))
+  const chunkN = ranges.map(([s, e]) => Math.max(1, Math.round((e - s) * inputFps))) // each chunk's own total
+  const chunkI = ranges.map(() => 0) // each chunk's own latest reported progress
   log(`parallel: ${ranges.length} chunks × ~${fmtDur(durationSec / ranges.length)} → ${out}`)
   const t0 = Date.now()
+  const tty = process.stdout.isTTY
+  let pct = -1
+  let shown = -1
+  let lastRateT = t0
+  let lastReadEst = 0
+  let lastWriteBytes = 0
+  let readRate = 0
+  let writeRate = 0
+
+  const onChunkProgress = () => {
+    if (quiet) return
+    const n = chunkN.reduce((a, b) => a + b, 0)
+    const i = chunkI.reduce((a, b) => a + b, 0)
+    const p = Math.floor((i / n) * 100)
+    const now = Date.now()
+    const dueForRate = now - lastRateT >= 1000 || i === n
+    if (p === pct && !dueForRate) return
+    if (dueForRate) {
+      const dt = (now - lastRateT) / 1000
+      const readEst = (i / n) * inputBytes
+      const writeBytes = chunks.reduce((sum, f) => {
+        try {
+          return sum + statSync(f).size
+        } catch {
+          return sum
+        }
+      }, 0)
+      if (dt > 0) {
+        readRate = (readEst - lastReadEst) / dt
+        writeRate = (writeBytes - lastWriteBytes) / dt
+      }
+      lastReadEst = readEst
+      lastWriteBytes = writeBytes
+      lastRateT = now
+    }
+    pct = p
+    const el = (now - t0) / 1000
+    const eta = i > 0 ? (el / i) * (n - i) : 0
+    const speedX = el > 0 ? i / inputFps / el : 0
+    const line = progressLine(p, i, n, el, eta, speedX, readRate, writeRate)
+    if (tty) {
+      process.stdout.write(`\r  ${line}    `)
+    } else if (p % 10 === 0 && p !== shown) {
+      shown = p
+      log(`  ${line}`)
+    }
+  }
+
   let done = 0
   await Promise.all(
     ranges.map(([s, e], i) => {
-      const argv = [cliPath, ...base, '--range', `${s},${e}`, '--out', chunks[i], '--quiet']
+      const argv = [cliPath, ...base, '--range', `${s},${e}`, '--out', chunks[i], '--quiet', '--precomputed', precomputedPath]
       return new Promise((res, rej) => {
-        const p = spawn(process.execPath, argv, { stdio: ['ignore', 'ignore', 'inherit'] })
+        const p = spawn(process.execPath, argv, { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
+        p.on('message', (msg) => {
+          chunkI[i] = msg.i
+          onChunkProgress()
+        })
         p.on('error', rej)
         p.on('close', (code) => {
           if (code !== 0) return rej(new Error(`chunk ${i} (${s.toFixed(1)}–${e.toFixed(1)}s) exited ${code}`))
+          chunkI[i] = chunkN[i] // this chunk is done, regardless of its last reported message
           log(`  chunk ${++done}/${ranges.length} done`)
           res()
         })
       })
     }),
   )
+  if (tty && !quiet) process.stdout.write('\n')
   await concatCopy(chunks, out, {})
-  for (const f of chunks) {
+  for (const f of [...chunks, precomputedPath]) {
     try {
       unlinkSync(f)
     } catch {
       /* best-effort cleanup */
     }
   }
-  log(`done: ${out}  (${durationSec.toFixed(1)}s)  in ${fmtDur((Date.now() - t0) / 1000)} using ${ranges.length} jobs`)
+  const totalElapsedSec = (Date.now() - t0) / 1000
+  const speedX = totalElapsedSec > 0 ? durationSec / totalElapsedSec : 0
+  log(
+    `done: ${out}  (${durationSec.toFixed(1)}s)  in ${fmtDur(totalElapsedSec)} using ${ranges.length} jobs  (${speedX.toFixed(2)}x)`,
+  )
   return out
 }
 
@@ -433,26 +513,72 @@ async function main() {
       : []
 
   // Parallel render (--jobs N): split into N chunks rendered by child processes, then
-  // concat. Only for a single clip WITH an overlay (a pure stitch is already a fast copy)
-  // and not a chunk (--range) / snapshot. Short-circuits before the single-engine path.
-  if (jobs > 1 && !args.range && !args.snapshot && files.length === 1 && layout.length > 0 && info?.durationSec) {
-    log(`movie-layers: parallel render, ${jobs} jobs`)
-    await renderParallel({
-      rawArgv: process.argv.slice(2),
-      jobs,
-      out,
-      durationSec: info.durationSec,
-      inputFps: widgetFps ?? fps,
-      log,
-    })
-    if (args.open) openFile(out)
-    return
+  // concat. WITH an overlay only (a pure stitch is already a fast copy) and not a chunk
+  // (--range) / snapshot. Short-circuits before the single-engine path. Multi-file inputs
+  // work too — each chunk gets the same file list (chunkArgv preserves the positional
+  // args) plus its own --range, and already knows how to seek across a multi-file concat
+  // (the concat-list `duration` hints in ffmpeg.js's `_baseInput()`; verified against a
+  // range crossing a real segment boundary).
+  if (jobs > 1 && !args.range && !args.snapshot && layout.length > 0) {
+    // Precompute once (probe + load all provider data + resolve clocks) and hand the
+    // same bundle to every chunk via --precomputed, instead of each chunk redoing
+    // potentially expensive per-file extraction redundantly (e.g. provider-gopro's GPS
+    // parsing — a real, felt delay on a multi-clip GoPro folder).
+    let precomputed = null
+    try {
+      const precomputeEngine = new Engine({
+        ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
+        fps,
+        inputFps: widgetFps,
+        scaleBaseline: baseline,
+        clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+        providers,
+        layout,
+      })
+      precomputed = await precomputeEngine.prepareData()
+    } catch {
+      /* precomputed stays null — fall through to the single-engine path below */
+    }
+    if (precomputed) {
+      const totalDurationSec = precomputed.segments.reduce((sum, s) => sum + s.durationSec, 0)
+      const totalInputBytes = files.reduce((sum, f) => {
+        try {
+          return sum + statSync(f).size
+        } catch {
+          return sum
+        }
+      }, 0)
+      const precomputedPath = join(tmpdir(), `ml-precomputed-${process.pid}.json`)
+      writeFileSync(precomputedPath, JSON.stringify(precomputed))
+      log(`movie-layers: parallel render, ${jobs} jobs${files.length > 1 ? ` (${files.length} clips)` : ''}`)
+      await renderParallel({
+        rawArgv: process.argv.slice(2),
+        jobs,
+        out,
+        durationSec: totalDurationSec,
+        inputFps: widgetFps ?? fps,
+        inputBytes: totalInputBytes,
+        precomputedPath,
+        quiet: args.quiet,
+        log,
+      })
+      if (args.open) openFile(out)
+      return
+    }
+    log(`note: --jobs skipped — couldn't precompute telemetry; rendering normally`)
   }
-  if (jobs > 1 && files.length > 1) log(`note: --jobs needs a single clip — rendering normally`)
 
+  // --precomputed <path> (internal — set by renderParallel() for a --jobs chunk): the
+  // parent already probed + loaded all provider data once; skip doing it again here.
+  const precomputed = args.precomputed ? JSON.parse(readFileSync(args.precomputed, 'utf8')) : null
   const engine = new Engine({
-    // 1 clip → baseVideo; many → segments (ffmpeg concat over one logical timeline)
-    ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
+    // 1 clip → baseVideo; many → segments (ffmpeg concat over one logical timeline);
+    // a precomputed bundle skips both entirely
+    ...(precomputed
+      ? { precomputed }
+      : files.length > 1
+        ? { segments: files.map((f) => ({ file: f })) }
+        : { baseVideo: input }),
     fps,
     inputFps: widgetFps, // overlay draw rate (null → Engine defaults it to fps)
     renderStartSec: range?.[0] ?? null, // a chunk renders only its [start,end) window
@@ -539,10 +665,23 @@ async function main() {
     let lastWriteBytes = 0
     let readRate = 0
     let writeRate = 0
+    let lastIpcT = 0
     await engine.render({
       scene,
       onCommand: logCmd,
       onProgress: (i, n) => {
+        // running as a --jobs chunk (spawned with an ipc channel): tell the parent our
+        // progress, throttled to ~1/sec — a minimal payload, since the parent already
+        // knows this chunk's own frame total (from the range it assigned) and can stat
+        // this chunk's own output file itself for byte rates. Independent of --quiet,
+        // which only silences THIS process's own console output.
+        if (process.send) {
+          const now0 = Date.now()
+          if (now0 - lastIpcT >= 1000 || i === n) {
+            process.send({ i })
+            lastIpcT = now0
+          }
+        }
         if (args.quiet) return
         const p = Math.floor((i / n) * 100)
         const now = Date.now()
@@ -571,9 +710,7 @@ async function main() {
         // encode speed as a multiple of realtime — e.g. an hour of footage encoded in
         // 30 real minutes is "2.00x" (video-time processed so far ÷ real elapsed time)
         const speedX = el > 0 ? i / renderFps / el : 0
-        const line =
-          `${String(p).padStart(3)}%  ${i}/${n}  ${fmtDur(el)} elapsed · ETA ${fmtDur(eta)} · ~${fmtDur(el + eta)} total` +
-          `  ·  ${speedX.toFixed(2)}x  ·  read~${fmtRate(readRate)}  write ${fmtRate(writeRate)}`
+        const line = progressLine(p, i, n, el, eta, speedX, readRate, writeRate)
         if (tty) {
           process.stdout.write(`\r  ${line}    `) // one updating line in a terminal
         } else if (p % 10 === 0 && p !== shown) {
