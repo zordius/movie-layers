@@ -530,17 +530,30 @@ export class Engine {
    * Render ONE frame to a PNG for preview — the overlay composited over the base
    * video frame at `atSec` (default: the middle of the timeline). With no base
    * video the overlay sits on `background` (or transparent). Writes `output`.
+   *
+   * `warmupSec` draws (but discards) the steps from `atSec - warmupSec` up to the
+   * target — the same "draw but don't emit" trick as render()'s `renderWarmupSec` —
+   * so stateful widget smoothing (src/smooth.js's `Smoother`: gauge display smoothing,
+   * Latlon's heading smoothing) has converged to what continuous playback would
+   * actually show at `atSec`, instead of snapshotting each Smoother's FIRST call
+   * (which always snaps to the raw value, dashboard-spec §2).
    */
-  async snapshot({ atSec = null, output = this.output, scene = null, onCommand = null } = {}) {
+  async snapshot({ atSec = null, output = this.output, scene = null, onCommand = null, warmupSec = 1.5 } = {}) {
     scene = scene ?? (await this._scene())
     const { ctx, built, data, timeline } = scene
     const t = atSec != null ? atSec : timeline.durationSec / 2 // default: the middle frame
 
-    // the timeline step nearest t
+    // warm up from (t - warmupSec), clamped to 0, up to the target step
+    const warmupStart = Math.max(0, t - warmupSec)
     let step = null
     for (const s of timeline.steps()) {
+      if (s.timeSec < warmupStart) continue
+      if (s.timeSec < t) {
+        this._drawOverlay(ctx, built, data, scene, s) // advance smoothing state; pixels discarded below
+        continue
+      }
       step = s
-      if (s.timeSec >= t) break
+      break
     }
     if (!step) throw new Error('snapshot: empty timeline (nothing to draw)')
 
