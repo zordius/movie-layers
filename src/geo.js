@@ -57,6 +57,24 @@ export const tile2lat = (yt, z) => {
 }
 
 /**
+ * Ray-casting point-in-polygon test — `ring` is an array of `{lat,lon}` forming a closed
+ * (or auto-closing) loop. Used to check whether a GPS point falls inside an OSM polygon
+ * (e.g. a `landuse=winter_sports` resort boundary fetched from Overpass).
+ */
+export function pointInRing(lat, lon, ring) {
+  let inside = false
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i].lon
+    const yi = ring[i].lat
+    const xj = ring[j].lon
+    const yj = ring[j].lat
+    if (yi === yj) continue
+    if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside
+  }
+  return inside
+}
+
+/**
  * Pick the slippy-map zoom whose tile resolution best matches our render
  * resolution at `lat`. We want physical metres-per-pixel ≈ 1/(ppm·scale), and
  * Mercator gives `156543·cos(lat)/2^z` m/px, so `z = log2(156543·cos·ppm·scale)`.

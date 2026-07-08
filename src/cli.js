@@ -224,6 +224,9 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = 
   // so it stays to scale. Placed FIRST in the layout so it draws beneath the track.
   const layout = map ? [{ type: 'map', ...trackBox, ...map }] : []
   layout.push({ type: 'track', ...trackBox })
+  // resort-name label (opt-in with map): placed LAST so it always draws on top of
+  // the track widget's own panel/grid/line, never occluded by anything in the box.
+  if (map) layout.push({ type: 'map-label', ...trackBox })
 
   if (landscape) {
     // landscape: gauges along the bottom edge, speed just above the row

@@ -625,7 +625,7 @@ class Track extends Layer {
         }
         ctx.stroke()
         ctx.restore()
-        ctx.fillStyle = GRAY
+        ctx.fillStyle = CYAN // same colour as the SPEED widget's "SPEED" label
         ctx.font = `600 14px ${MONO}`
         ctx.textBaseline = 'alphabetic'
         ctx.fillText(fmtMeters(cell), this.x + 6, this.y + this.h - 6)
