@@ -60,6 +60,9 @@ options:
   --no-hw               disable auto hardware acceleration (software decode + x264 encode)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
   --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
+  --mode NAME           gpx-stabilizer analysis mode (default: core; "ski" adds
+                        lift/cable-car detection + a more aggressive elevation despike).
+                        Embedded GoPro GPS only; ignored with --no-stabilize or --gpx.
   --no-datetime         omit the date/time readout
   --no-smooth           disable gauge-value display smoothing (on by default)
   --map                 draw an OpenStreetMap basemap under the big track map (off by default)
@@ -246,12 +249,16 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = 
   return layout
 }
 
-/** Drop `--jobs N`, `--out X`, and `--open` from a raw argv so it can drive a chunk child. */
+/**
+ * Drop `--jobs N`, `--out X`, `--range S,E`, and `--open` from a raw argv so it can drive
+ * a chunk child — the caller appends its own `--range`/`--out` (a sub-window of the
+ * user's own `--range`, if any) after this.
+ */
 function chunkArgv(rawArgv) {
   const out = []
   for (let i = 0; i < rawArgv.length; i++) {
     const t = rawArgv[i]
-    if (t === '--jobs' || t === '--out') i++ // drop the flag AND its value
+    if (t === '--jobs' || t === '--out' || t === '--range') i++ // drop the flag AND its value
     else if (t === '--open') continue // parent opens the final concat, not each chunk
     else out.push(t)
   }
@@ -259,9 +266,11 @@ function chunkArgv(rawArgv) {
 }
 
 /**
- * Parallel render: split [0,duration) into `jobs` frame-aligned ranges, render each in
- * its own CLI child process (`--range start,end`), then losslessly concat the chunks.
- * Near-Nx faster (the draw is single-threaded per process) until the encode floor.
+ * Parallel render: split [rangeStart,rangeStart+duration) into `jobs` frame-aligned
+ * ranges, render each in its own CLI child process (`--range start,end`), then losslessly
+ * concat the chunks. Near-Nx faster (the draw is single-threaded per process) until the
+ * encode floor. `rangeStart` is 0 for the whole clip, or the user's own `--range` start
+ * when --jobs composes with it (main() then passes the range's own span as `duration`).
  * Seam note: per-chunk gauge display-smoothing restarts at each boundary (the first
  * sample snaps, so no sweep-from-zero — just a velocity reset; the basemap/halo/clock
  * are global and continuous).
@@ -273,12 +282,25 @@ function chunkArgv(rawArgv) {
  * aggregate progress line in the exact same shape `progressLine()` prints for a
  * single-process render, just summed across chunks.
  */
-async function renderParallel({ rawArgv, jobs, out, durationSec, inputFps, inputBytes, precomputedPath, quiet, log }) {
+async function renderParallel({
+  rawArgv,
+  jobs,
+  out,
+  durationSec,
+  rangeStart = 0,
+  inputFps,
+  inputBytes,
+  precomputedPath,
+  quiet,
+  log,
+}) {
   const Fi = Math.max(1, Math.round(durationSec * inputFps)) // total overlay frames
   const bound = []
   for (let i = 0; i <= jobs; i++) bound.push(Math.round((i * Fi) / jobs))
   const ranges = []
-  for (let i = 0; i < jobs; i++) if (bound[i] < bound[i + 1]) ranges.push([bound[i] / inputFps, bound[i + 1] / inputFps])
+  for (let i = 0; i < jobs; i++) {
+    if (bound[i] < bound[i + 1]) ranges.push([rangeStart + bound[i] / inputFps, rangeStart + bound[i + 1] / inputFps])
+  }
 
   const base = chunkArgv(rawArgv)
   const cliPath = fileURLToPath(import.meta.url)
@@ -440,11 +462,13 @@ async function main() {
   if (args.gpx) {
     dataProvider = gpx({ file: args.gpx })
     log(`  source: sidecar gpx ${args.gpx}`)
+    if (args.mode) log(`  note: --mode ${args.mode} ignored — only embedded GoPro GPS supports it`)
   } else if (hasGps) {
     // elevation smoothing is the provider default (clean gradient); --no-stabilize = raw
     const raw = !!args.noStabilize
-    dataProvider = gopro(raw ? { stabilize: false } : {})
-    log(`  source: embedded GoPro GPS${raw ? ' (raw)' : ' (smoothed)'}`)
+    dataProvider = gopro(raw ? { stabilize: false } : { mode: args.mode })
+    log(`  source: embedded GoPro GPS${raw ? ' (raw)' : ' (smoothed)'}${args.mode && !raw ? `, mode ${args.mode}` : ''}`)
+    if (raw && args.mode) log(`  note: --mode ${args.mode} ignored — --no-stabilize disables analysis entirely`)
   } else {
     // pass-through: no telemetry → just stitch/encode the footage (datetime if a clock exists)
     const minimal = withDatetime && info?.creationTime != null ? 'datetime only' : 'no overlay (stitch only)'
@@ -513,13 +537,15 @@ async function main() {
       : []
 
   // Parallel render (--jobs N): split into N chunks rendered by child processes, then
-  // concat. WITH an overlay only (a pure stitch is already a fast copy) and not a chunk
-  // (--range) / snapshot. Short-circuits before the single-engine path. Multi-file inputs
-  // work too — each chunk gets the same file list (chunkArgv preserves the positional
-  // args) plus its own --range, and already knows how to seek across a multi-file concat
-  // (the concat-list `duration` hints in ffmpeg.js's `_baseInput()`; verified against a
-  // range crossing a real segment boundary).
-  if (jobs > 1 && !args.range && !args.snapshot && layout.length > 0) {
+  // concat. WITH an overlay only (a pure stitch is already a fast copy) and not a
+  // snapshot. Short-circuits before the single-engine path. Multi-file inputs work too —
+  // each chunk gets the same file list (chunkArgv preserves the positional args) plus its
+  // own --range, and already knows how to seek across a multi-file concat (the
+  // concat-list `duration` hints in ffmpeg.js's `_baseInput()`; verified against a range
+  // crossing a real segment boundary). A user-supplied --range composes with --jobs too:
+  // instead of splitting the WHOLE clip into N chunks, it splits just [range[0],range[1])
+  // — each chunk's own --range (passed down to it) is offset within that window.
+  if (jobs > 1 && !args.snapshot && layout.length > 0) {
     // Precompute once (probe + load all provider data + resolve clocks) and hand the
     // same bundle to every chunk via --precomputed, instead of each chunk redoing
     // potentially expensive per-file extraction redundantly (e.g. provider-gopro's GPS
@@ -541,6 +567,10 @@ async function main() {
     }
     if (precomputed) {
       const totalDurationSec = precomputed.segments.reduce((sum, s) => sum + s.durationSec, 0)
+      // --range narrows the window --jobs splits into chunks: [0,totalDurationSec) by
+      // default, or [range[0],range[1]) when given.
+      const rangeStart = range?.[0] ?? 0
+      const windowDurationSec = (range?.[1] ?? totalDurationSec) - rangeStart
       const totalInputBytes = files.reduce((sum, f) => {
         try {
           return sum + statSync(f).size
@@ -555,7 +585,8 @@ async function main() {
         rawArgv: process.argv.slice(2),
         jobs,
         out,
-        durationSec: totalDurationSec,
+        durationSec: windowDurationSec,
+        rangeStart,
         inputFps: widgetFps ?? fps,
         inputBytes: totalInputBytes,
         precomputedPath,

@@ -90,6 +90,10 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  *   forces raw points (disables smoothing too). NOTE: cleaning drops each point's
  *   `fix`, so fix-filtering is skipped — it trusts the cleaner to have removed
  *   pre-lock/outlier points. `speed` is dropped too → the GPS-derived fallback fills it.
+ * @param {string} [opts.mode]  gpx-stabilizer analysis mode (e.g. "ski" — lift/cable-car
+ *   detection + a more aggressive elevation despike); passed straight through to
+ *   `stabilize()`'s own `opts.mode` (gpx-stabilizer expands the preset itself). Ignored
+ *   when `opts.stabilize === false` (raw — nothing runs `stabilize()` at all).
  * @param {number} [opts.maxGap=3]      seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim), e.g. mid-track fix loss
  * @param {number} [opts.gradeWindowM=15]  distance window (m) the gradient slope is
@@ -144,7 +148,11 @@ export default function gopro(opts = {}) {
       const stab =
         opts.stabilize === false
           ? false
-          : { ...(typeof opts.stabilize === 'object' ? opts.stabilize : {}), ...(smooth ? { smooth: true } : {}) }
+          : {
+              ...(typeof opts.stabilize === 'object' ? opts.stabilize : {}),
+              ...(smooth ? { smooth: true } : {}),
+              ...(opts.mode ? { mode: opts.mode } : {}),
+            }
 
       for (const target of targets) {
         const res = await readGoproTelemetry(target.path, {
