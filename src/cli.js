@@ -86,6 +86,15 @@ several inputs concat into one timeline. A GoPro clip (embedded gpmd GPS) gets t
 full dashboard automatically; a sidecar .gpx works via --gpx; a clip with no GPS is
 simply stitched/encoded (no dashboard).`
 
+// Every flag that takes a value — the parser's whitelist, so a typo (`--rnage`,
+// `--jbos`) errors out instead of silently swallowing the next token as its "value".
+const VALUE_FLAGS = new Set([
+  '--out', '--at', '--gpx', '--fps', '--widget-fps', '--jobs', '--range',
+  '--profile', '--profile-file', '--bitrate', '--clock-offset', '--mode',
+  '--map-zoom', '--map-cache', '--baseline',
+  '--precomputed', // internal — set by renderParallel() for a --jobs chunk
+])
+
 function parseArgs(argv) {
   const a = { _: [] }
   for (let i = 0; i < argv.length; i++) {
@@ -101,8 +110,17 @@ function parseArgs(argv) {
     else if (t === '--quiet' || t === '-q') a.quiet = true
     else if (t === '--stabilize') a.stabilize = true
     else if (t === '--no-stabilize') a.noStabilize = true
-    else if (t.startsWith('--')) a[t.slice(2)] = argv[++i] // flag takes the next token
-    else a._.push(t)
+    else if (VALUE_FLAGS.has(t)) {
+      const v = argv[++i]
+      if (v === undefined) {
+        console.error(`error: ${t} needs a value`)
+        process.exit(1)
+      }
+      a[t.slice(2)] = v
+    } else if (t.startsWith('-')) {
+      console.error(`error: unknown option "${t}" — run with --help for the flag list`)
+      process.exit(1)
+    } else a._.push(t)
   }
   return a
 }
@@ -704,6 +722,8 @@ async function main() {
   // crossing a real segment boundary). A user-supplied --range composes with --jobs too:
   // instead of splitting the WHOLE clip into N chunks, it splits just [range[0],range[1])
   // — each chunk's own --range (passed down to it) is offset within that window.
+  if (jobs > 1 && args.snapshot)
+    console.warn(`note: --jobs ignored — a snapshot renders one frame, nothing to parallelize`)
   if (jobs > 1 && !args.snapshot && layout.length > 0) {
     // `precomputed` may already be populated by the channel-presence probe above
     // (whenever there's a data provider) — reuse it instead of loading a second time.

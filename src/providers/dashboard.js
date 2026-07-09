@@ -33,35 +33,30 @@ const GRID = 'rgba(255,255,255,0.15)' // track-map grid lines
 const FONT = 'sans-serif'
 const MONO = 'Menlo, monospace' // fixed-width for numeric values (no jitter)
 const H = 78 // unified panel height across widgets
-const PAUSE_ANIM_SEC = 0.3 // current-position dot: grow-to-2x + fade-to-50%-alpha
-//   ramp on ENTERING a no-signal hold; returning to a valid signal snaps back instantly
+const PAUSE_ANIM_SEC = 0.3 // current-position dot: grow-to-2x + fade-to-50%-alpha ramp
+//   on entering a no-signal hold, and the same ramp in reverse on returning to a valid
+//   signal (both directions animated — see the per-frame step in Track.draw)
 
 function panel(ctx, x, y, w, h) {
   ctx.fillStyle = PANEL
   ctx.fillRect(x, y, w, h)
 }
 
-// 0 (valid) → 1 (PAUSE_ANIM_SEC into a no-signal hold, then flat) — drives both the
-// current-position dot's size and its color/alpha fade below. `sinceSec` is `this`'s own
-// stored transition time (null while valid), threaded through by the caller so the big
-// track map and its moving-window inset animate off the exact same signal, in sync.
-function pauseProgress(valid, timeSec, sinceSec) {
-  return valid ? 0 : Math.min(1, (timeSec - sinceSec) / PAUSE_ANIM_SEC)
+// Step a stored pause-animation value (0 = valid, 1 = fully held) one frame toward its
+// target at PAUSE_ANIM_SEC full-swing rate — BOTH transitions animate (enter a hold:
+// 0→1; recover: 1→0). Drives the current-position dot's size and alpha; the caller
+// stores the returned value and threads it to the moving-window inset so both dots
+// animate off the exact same signal, in sync.
+function stepPauseT(prev, valid, dt) {
+  const target = valid ? 0 : 1
+  const step = (dt > 0 ? dt : 0) / PAUSE_ANIM_SEC
+  return prev < target ? Math.min(target, prev + step) : Math.max(target, prev - step)
 }
 
-function hexToRgb(hex) {
-  const n = parseInt(hex.slice(1), 16)
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
-}
-
-// linear RGB blend from `a` to `b` (hex strings) at `t` (0..1), with an explicit alpha.
-function lerpColor(a, b, t, alpha) {
-  const [ar, ag, ab] = hexToRgb(a)
-  const [br, bg, bb] = hexToRgb(b)
-  const r = Math.round(ar + (br - ar) * t)
-  const g = Math.round(ag + (bg - ag) * t)
-  const bl = Math.round(ab + (bb - ab) * t)
-  return `rgba(${r},${g},${bl},${alpha})`
+// The current-position dot's pause fill: stays ACCENT green, alpha 1 → 0.5 along the
+// pause ramp (131,224,0 = ACCENT '#83e000' — same literal the recent-trail fade uses).
+function pausedDotFill(pauseT) {
+  return `rgba(131, 224, 0, ${(1 - 0.5 * pauseT).toFixed(3)})`
 }
 
 // round up to a "nice" 1/2/5 × 10ⁿ value (for a readable metric grid step)
@@ -302,26 +297,26 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
       ctx.stroke()
     }
     // pulsing halo around the centre dot — a regular "ping": expands + fades on a
-    // 1.2 s cycle (driven by playback time, so every render is identical). Frozen
-    // (held / no signal) → no pulse and the dot greys out; the rest of the picture stays.
+    // 1 s cycle (driven by playback time, so every render is identical). Frozen
+    // (held / no signal) → no pulse; the rest of the picture stays.
     if (sg.valid) {
       const P = 1 // s — one ping per second
       const phase = (f.timeSec % P) / P // 0→1 ramp, then restart (expand only, no contract)
-      ctx.fillStyle = `rgba(131, 224, 0, ${(0.35 * (1 - phase)).toFixed(3)})` // ACCENT, fading out as it grows
+      ctx.fillStyle = `rgba(131, 224, 0, ${(0.7 * (1 - phase)).toFixed(3)})` // ACCENT, fading out as it grows
       ctx.beginPath()
       ctx.arc(cx, cy, 5 + 12 * phase, 0, Math.PI * 2)
       ctx.fill()
     }
     // white backing ring, slightly larger than the dot — the travelled path underneath
     // is drawn in the same ACCENT green, so the dot needs contrast to stay visible on it.
-    // Entering a no-signal hold grows the dot to 2x + fades toward GRAY@50%-alpha, same
-    // ramp (and the same `pauseT`) as the big track map's own current-position dot.
+    // Entering a no-signal hold grows the dot to 2x and fades it (still ACCENT green) to
+    // 50% alpha, same ramp (and the same `pauseT`) as the big track map's own dot.
     const dotR = 5 * (1 + pauseT)
     ctx.fillStyle = WHITE
     ctx.beginPath()
     ctx.arc(cx, cy, dotR + 2, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = lerpColor(ACCENT, GRAY, pauseT, 1 - 0.5 * pauseT)
+    ctx.fillStyle = pausedDotFill(pauseT)
     ctx.beginPath()
     ctx.arc(cx, cy, dotR, 0, Math.PI * 2)
     ctx.fill()
@@ -615,7 +610,7 @@ class Track extends Layer {
     this.grid = c.grid ?? true // semi-transparent panel + metric grid behind the track
     this.inset = c.inset ?? true // moving-window mini-map in the top-left corner
     this._ret = undefined // cached inset zoom (computed once)
-    this._pauseSinceSec = null // playback time the gps signal last WENT invalid (null while valid)
+    this._pauseT = 0 // pause-animation state, 0 (valid) ↔ 1 (held) — stepped per frame
   }
   // Shared with provider-map (geo.js) so a basemap drawn UNDER this widget uses
   // the identical fit and stays exactly to scale (尺度同步).
@@ -677,21 +672,23 @@ class Track extends Layer {
       })
       ctx.stroke()
     }
-    // current position dot — entering a no-signal hold grows it to 2x and fades its
-    // color toward GRAY@50%-alpha over PAUSE_ANIM_SEC (see pauseProgress/lerpColor);
-    // returning to a valid signal snaps back immediately.
+    // current position dot — entering a no-signal hold grows it to 2x, keeps it ACCENT
+    // green fading to 50% alpha, and fades the black backing border out entirely, all
+    // over PAUSE_ANIM_SEC; recovery plays the same ramp in reverse (see stepPauseT).
     const cs = f.data.sample('gps')
-    this._pauseSinceSec = cs.valid ? null : this._pauseSinceSec ?? f.timeSec
-    const pauseT = pauseProgress(cs.valid, f.timeSec, this._pauseSinceSec)
+    this._pauseT = stepPauseT(this._pauseT, cs.valid, f.dt)
+    const pauseT = this._pauseT
     const cur = cs.value
     if (cur && cur.lat != null) {
       const [px, py] = project(cur.lat, cur.lon)
       const dotR = 6 * (1 + pauseT)
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'
-      ctx.beginPath()
-      ctx.arc(px, py, dotR + 2, 0, Math.PI * 2)
-      ctx.fill()
-      ctx.fillStyle = lerpColor(ACCENT, GRAY, pauseT, 1 - 0.5 * pauseT)
+      if (pauseT < 1) {
+        ctx.fillStyle = `rgba(0,0,0,${(0.6 * (1 - pauseT)).toFixed(3)})`
+        ctx.beginPath()
+        ctx.arc(px, py, dotR + 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.fillStyle = pausedDotFill(pauseT)
       ctx.beginPath()
       ctx.arc(px, py, dotR, 0, Math.PI * 2)
       ctx.fill()
