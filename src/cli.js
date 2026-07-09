@@ -7,6 +7,7 @@
 //   movie-layers ./ride-folder                -> concat every clip in the folder (sorted)
 //   movie-layers a.mp4 b.mp4                   -> concat two clips into one timeline
 //   movie-layers clip.mp4 --gpx ride.gpx      -> overlay from a sidecar .gpx
+//   movie-layers a.mp4 b.mp4 --gpx a.gpx,b.gpx -> one sidecar .gpx per clip, or a dir of them
 //   movie-layers plain.mp4                     -> no GPS → just encode/concat (no dashboard)
 //   movie-layers clip.mp4 --snapshot --at 30  -> one preview PNG at 30 s
 //
@@ -42,7 +43,10 @@ options:
   --at SEC              snapshot time in seconds (default: the middle of the clip)
   --open                open the output when done (in the default viewer)
   -q, --quiet           silence the staged log / progress (errors still print)
-  --gpx FILE            use a sidecar .gpx for telemetry instead of embedded GPS
+  --gpx FILE[,FILE...]|DIR  use sidecar .gpx track(s) for telemetry instead of embedded
+                        GPS — comma-separated files and/or a directory (its .gpx files,
+                        sorted); every point still resolves to its clip by wall clock, so
+                        one file per clip and one continuous track both work
   --fps N               output framerate (default 30)
   --widget-fps N        rate the overlay/widgets are drawn (default: = --fps); lower
                         = fewer canvas frames → faster render, base video stays --fps
@@ -192,6 +196,35 @@ export function expandInputs(inputs) {
   return out
 }
 
+const GPX_EXT = new Set(['.gpx'])
+
+/**
+ * Expand `--gpx`'s value: comma-separated entries, each a `.gpx` file or a
+ * directory (→ its `.gpx` files, sorted) — mirrors `expandInputs()`'s
+ * file-or-directory handling for video inputs.
+ */
+export function expandGpxInputs(raw) {
+  const out = []
+  for (const part of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+    let isDir = false
+    try {
+      isDir = statSync(part).isDirectory()
+    } catch {
+      /* missing path — keep it so provider-gpx reports a clear read error */
+    }
+    if (isDir) {
+      const tracks = readdirSync(part)
+        .filter((f) => GPX_EXT.has(extname(f).toLowerCase()))
+        .sort()
+        .map((f) => join(part, f))
+      out.push(...tracks)
+    } else {
+      out.push(part)
+    }
+  }
+  return out
+}
+
 /**
  * Default telemetry dashboard, authored in a 1080-tall LOGICAL space (the engine's
  * `scaleBaseline` maps it to the real frame, so positions hold at any resolution).
@@ -199,12 +232,24 @@ export function expandInputs(inputs) {
  * under it, the gauges along the bottom edge. That bottom row spans ~x5..671 and
  * overflows a narrow logical canvas — so for portrait / vertical aspects
  * (`logicalW < ROW_MIN`) the gauges STACK in a left column instead. Widgets are
- * omitted when their channel is absent (e.g. `speed` after `--stabilize`).
+ * omitted when their channel is absent for the WHOLE clip (e.g. `track`/`latlon`/`map`
+ * with no GPS at all, `altitude`/`gradient` with no elevation at all) — each caller
+ * passes that in via `hasGps`/`hasAltitude`/`hasGradient`, checked independently since
+ * GPS and elevation can be missing separately.
  *
- * @param {{hasSpeed:boolean, withDatetime:boolean, logicalW:number}} o
+ * @param {{hasSpeed:boolean, hasGps:boolean, hasAltitude:boolean, hasGradient:boolean, withDatetime:boolean, logicalW:number}} o
  *   logicalW = baseline × (videoWidth / videoHeight) — the logical canvas width.
  */
-export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = false, map = null }) {
+export function defaultLayout({
+  hasSpeed,
+  hasGps,
+  hasAltitude,
+  hasGradient,
+  withDatetime,
+  logicalW = 1920,
+  flip = false,
+  map = null,
+}) {
   const M = 5 // edge margin (logical px) — hug the corners
   const row = 997 // bottom-row top: panel height ≈ 78 → its bottom sits ~M from 1080
   const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~666 px wide
@@ -220,29 +265,45 @@ export function defaultLayout({ hasSpeed, withDatetime, logicalW = 1920, flip = 
   const side = Math.max(160, Math.min(360, logicalW - 3 * M - (landscape ? ROW_W : GAUGE_W)))
   const trackX = gaugesRight ? M : logicalW - side - M
   const trackBox = { x: trackX, y: 1080 - side - M, width: side, height: side }
-  // OSM basemap (opt-in) under the big track map: same box → identical projection,
-  // so it stays to scale. Placed FIRST in the layout so it draws beneath the track.
-  const layout = map ? [{ type: 'map', ...trackBox, ...map }] : []
-  layout.push({ type: 'track', ...trackBox })
-  // resort-name label (opt-in with map): placed LAST so it always draws on top of
-  // the track widget's own panel/grid/line, never occluded by anything in the box.
-  if (map) layout.push({ type: 'map-label', ...trackBox })
+  const layout = []
+  // track/map/map-label all need GPS — omit that whole corner when the clip has none
+  // anywhere (never just the rendered --range window: a chunk with no GPS in its own
+  // window can still have GPS elsewhere in the clip).
+  if (hasGps) {
+    // OSM basemap (opt-in) under the big track map: same box → identical projection,
+    // so it stays to scale. Placed FIRST in the layout so it draws beneath the track.
+    if (map) layout.push({ type: 'map', ...trackBox, ...map })
+    layout.push({ type: 'track', ...trackBox })
+    // resort-name label (opt-in with map): placed LAST so it always draws on top of
+    // the track widget's own panel/grid/line, never occluded by anything in the box.
+    if (map) layout.push({ type: 'map-label', ...trackBox })
+  }
+
+  // Which bottom-row gauges the clip's data actually supports — independent checks
+  // (any subset can be missing): altitude/gradient need elevation, latlon needs GPS.
+  // Widths match ROW_W's own breakdown (276 +5+180 +5+200), for landscape's
+  // left-to-right layout.
+  const GAUGE_WIDTH = { latlon: 276, altitude: 180, gradient: 200 }
+  const gauges = [
+    ...(hasGps ? ['latlon'] : []),
+    ...(hasAltitude ? ['altitude'] : []),
+    ...(hasGradient ? ['gradient'] : []),
+  ]
 
   if (landscape) {
     // landscape: gauges along the bottom edge, speed just above the row
     const base = gaugesRight ? Math.max(M, logicalW - M - ROW_W) : M
     if (hasSpeed) layout.push({ type: 'speed', x: base, y: 914 })
     let x = base
-    layout.push({ type: 'latlon', x, y: row })
-    x += 281 // latlon panel (276) + M
-    layout.push({ type: 'altitude', x, y: row })
-    x += 185 // altitude panel (180) + M
-    layout.push({ type: 'gradient', x, y: row })
+    for (const type of gauges) {
+      layout.push({ type, x, y: row })
+      x += GAUGE_WIDTH[type] + M
+    }
   } else {
     // portrait / narrow: stack the gauges bottom-up the chosen edge
     const base = gaugesRight ? Math.max(M, logicalW - M - GAUGE_W) : M
     let y = row
-    for (const type of ['gradient', 'altitude', 'latlon', ...(hasSpeed ? ['speed'] : [])]) {
+    for (const type of [...gauges.slice().reverse(), ...(hasSpeed ? ['speed'] : [])]) {
       layout.push({ type, x: base, y })
       y -= 90
     }
@@ -463,8 +524,17 @@ async function main() {
   let dataProvider = null
   const hasSpeed = true
   if (args.gpx) {
-    dataProvider = gpx({ file: args.gpx })
-    log(`  source: sidecar gpx ${args.gpx}`)
+    const gpxFiles = expandGpxInputs(args.gpx)
+    if (gpxFiles.length === 0) {
+      console.error(`error: no .gpx files found in: ${args.gpx}`)
+      process.exit(1)
+    }
+    dataProvider = gpx({ files: gpxFiles })
+    log(
+      gpxFiles.length > 1
+        ? `  source: sidecar gpx (${gpxFiles.length} files): ${gpxFiles.join(', ')}`
+        : `  source: sidecar gpx ${gpxFiles[0]}`,
+    )
     if (args.mode) log(`  note: --mode ${args.mode} ignored — only embedded GoPro GPS supports it`)
   } else if (hasGps) {
     // elevation smoothing is the provider default (clean gradient); --no-stabilize = raw
@@ -529,12 +599,60 @@ async function main() {
     }
   }
 
-  // providers + layout (full dashboard with data; datetime-or-nothing without)
+  // providers (full dashboard with data; datetime-or-nothing without)
   const providers = dataProvider
     ? [dataProvider, dashboard, datetime, ...(mapCfg ? [mapProvider] : [])]
     : [datetime]
+
+  // --precomputed <path> (internal — set by renderParallel() for a --jobs chunk): the
+  // parent already probed + loaded all provider data once; reuse it instead of
+  // loading again here.
+  let precomputed = args.precomputed ? JSON.parse(readFileSync(args.precomputed, 'utf8')) : null
+
+  // Probe once, ahead of building the layout, so gauges needing elevation/GPS can be
+  // dropped when the WHOLE clip has none — never scoped to a --range window (a chunk
+  // with no elevation/GPS samples in its own [start,end) doesn't mean the whole video
+  // lacks it). Also lets the --jobs precompute step and the single-engine path below
+  // reuse this same load instead of each redoing potentially expensive per-file
+  // extraction (e.g. provider-gopro's GPS parsing).
+  if (dataProvider && !precomputed) {
+    try {
+      const probeEngine = new Engine({
+        ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
+        fps,
+        inputFps: widgetFps,
+        scaleBaseline: baseline,
+        clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+        providers,
+      })
+      precomputed = await probeEngine.prepareData()
+    } catch (e) {
+      console.error(`error: cannot load telemetry — ${e.message}`)
+      process.exit(1)
+    }
+  }
+  const loadedChannels = precomputed?.channels ?? {}
+  // Independent checks — either can be missing without the other: no GPS anywhere
+  // drops track/latlon/map; no elevation anywhere drops altitude AND gradient
+  // (gradient is derived from elevation), regardless of GPS. Named *Channel to avoid
+  // colliding with `hasGps` above (that one means "the video has an embedded gpmd
+  // stream" — a different question from "did the loaded telemetry end up with a
+  // non-empty gps channel").
+  const hasGpsChannel = 'gps' in loadedChannels
+  const hasAltitudeChannel = 'altitude' in loadedChannels
+  const hasGradientChannel = 'gradient' in loadedChannels
+
   const layout = dataProvider
-    ? defaultLayout({ hasSpeed, withDatetime, logicalW, flip: args.flip, map: mapCfg })
+    ? defaultLayout({
+        hasSpeed,
+        hasGps: hasGpsChannel,
+        hasAltitude: hasAltitudeChannel,
+        hasGradient: hasGradientChannel,
+        withDatetime,
+        logicalW,
+        flip: args.flip,
+        map: mapCfg,
+      })
     : withDatetime && info?.creationTime != null
       ? [{ type: 'datetime' }]
       : []
@@ -549,24 +667,24 @@ async function main() {
   // instead of splitting the WHOLE clip into N chunks, it splits just [range[0],range[1])
   // — each chunk's own --range (passed down to it) is offset within that window.
   if (jobs > 1 && !args.snapshot && layout.length > 0) {
-    // Precompute once (probe + load all provider data + resolve clocks) and hand the
-    // same bundle to every chunk via --precomputed, instead of each chunk redoing
-    // potentially expensive per-file extraction redundantly (e.g. provider-gopro's GPS
-    // parsing — a real, felt delay on a multi-clip GoPro folder).
-    let precomputed = null
-    try {
-      const precomputeEngine = new Engine({
-        ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
-        fps,
-        inputFps: widgetFps,
-        scaleBaseline: baseline,
-        clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
-        providers,
-        layout,
-      })
-      precomputed = await precomputeEngine.prepareData()
-    } catch {
-      /* precomputed stays null — fall through to the single-engine path below */
+    // `precomputed` may already be populated by the channel-presence probe above
+    // (whenever there's a data provider) — reuse it instead of loading a second time.
+    // Only the datetime-only / no-provider case still needs its own precompute here.
+    if (!precomputed) {
+      try {
+        const precomputeEngine = new Engine({
+          ...(files.length > 1 ? { segments: files.map((f) => ({ file: f })) } : { baseVideo: input }),
+          fps,
+          inputFps: widgetFps,
+          scaleBaseline: baseline,
+          clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+          providers,
+          layout,
+        })
+        precomputed = await precomputeEngine.prepareData()
+      } catch {
+        /* precomputed stays null — fall through to the single-engine path below */
+      }
     }
     if (precomputed) {
       const totalDurationSec = precomputed.segments.reduce((sum, s) => sum + s.durationSec, 0)
@@ -602,13 +720,14 @@ async function main() {
     log(`note: --jobs skipped — couldn't precompute telemetry; rendering normally`)
   }
 
-  // --precomputed <path> (internal — set by renderParallel() for a --jobs chunk): the
-  // parent already probed + loaded all provider data once; skip doing it again here.
-  const precomputed = args.precomputed ? JSON.parse(readFileSync(args.precomputed, 'utf8')) : null
   const engine = new Engine({
     // 1 clip → baseVideo; many → segments (ffmpeg concat over one logical timeline);
-    // a precomputed bundle skips both entirely
-    ...(precomputed
+    // a precomputed bundle skips both entirely — EXCEPT for --snapshot: precomputed
+    // mode leaves `sources` empty (by design, render()-only; see engine.js's
+    // `_resolve()`), but snapshot()'s extractFrame needs it, so a snapshot always
+    // resolves fresh here even though `precomputed` was already probed above (just
+    // for the channel-presence gating, not reused for the engine itself).
+    ...(precomputed && !args.snapshot
       ? { precomputed }
       : files.length > 1
         ? { segments: files.map((f) => ({ file: f })) }

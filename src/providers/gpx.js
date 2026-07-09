@@ -24,6 +24,11 @@
  *     layout: [{ type: 'speed' }, { type: 'latlon' }, ...],
  *   })
  *
+ * Multiple sidecars (`gpx({ files: [...] })`) merge into one point pool before
+ * alignment — each point still resolves to its own segment purely by wall clock
+ * (below), so this covers both "one .gpx per clip" and "one continuous track
+ * that happens to be split across files" without any extra bookkeeping.
+ *
  * Parsing is delegated to `gpx-stabilizer`'s render-agnostic `readGpx` (zero-dep),
  * keeping movie-layers core format-agnostic (spec §0). Channels produced: `gps`
  * ({lat,lon}); `speed` / `altitude` when the track carries them; and `gradient`
@@ -64,6 +69,8 @@ function goodPoints(points) {
  *
  * @param {object} [opts]
  * @param {string} [opts.file]   path to the `.gpx` sidecar (else `config.gpxFile`)
+ * @param {string[]} [opts.files]  multiple sidecars, merged (else `config.gpxFiles`);
+ *   takes precedence over `opts.file` if both are given
  * @param {string} [opts.name]   provider name for channel-merge precedence (default 'gpx')
  * @param {number} [opts.maxGap=3]  seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim)
@@ -76,17 +83,21 @@ export default function gpx(opts = {}) {
   return {
     name,
     async data({ segments = [], config = {} }) {
-      const path = opts.file ?? config.gpxFile
-      if (!path) {
-        throw new Error('provider-gpx: no sidecar file — pass gpx({ file }) or set dataConfig.gpxFile')
-      }
-      if (/\.fit$/i.test(path)) {
-        // FIT is a binary format needing its own decoder; the UTC-alignment path
-        // below is format-agnostic, so a FIT reader can drop in here later.
+      const paths = opts.files ?? config.gpxFiles ?? (opts.file ?? config.gpxFile ? [opts.file ?? config.gpxFile] : null)
+      if (!paths || paths.length === 0) {
         throw new Error(
-          `provider-gpx: '.fit' is not yet supported (binary format, decoder is a planned follow-up) — ` +
-            `convert to .gpx for now (e.g. gpsbabel / a Garmin export)`,
+          'provider-gpx: no sidecar file — pass gpx({ file }) / gpx({ files }) or set dataConfig.gpxFile/gpxFiles',
         )
+      }
+      for (const path of paths) {
+        if (/\.fit$/i.test(path)) {
+          // FIT is a binary format needing its own decoder; the UTC-alignment path
+          // below is format-agnostic, so a FIT reader can drop in here later.
+          throw new Error(
+            `provider-gpx: '.fit' is not yet supported (binary format, decoder is a planned follow-up) — ` +
+              `convert to .gpx for now (e.g. gpsbabel / a Garmin export): ${path}`,
+          )
+        }
       }
 
       // Segments that carry a wall clock are the only ones we can align against.
@@ -98,8 +109,26 @@ export default function gpx(opts = {}) {
         )
       }
 
-      const { segments: trkSegs } = readGpx(path)
-      const good = goodPoints(trkSegs.flat())
+      // merge every sidecar's points into one pool — each point's own UTC (below)
+      // decides which segment it belongs to, so multiple files resolve exactly
+      // like a single one.
+      const good = []
+      for (const path of paths) {
+        let trkSegs
+        try {
+          ;({ segments: trkSegs } = readGpx(path))
+        } catch (e) {
+          throw new Error(`provider-gpx: failed to read ${path} — ${e.message}`)
+        }
+        // plain loop, not `good.push(...points)` — a real-world GPX can carry tens of
+        // thousands of points, and spreading that many into one call blows V8's argument
+        // limit ("Maximum call stack size exceeded")
+        for (const p of goodPoints(trkSegs.flat())) good.push(p)
+      }
+      // channel samples and the gradient/speed helpers below assume ascending time;
+      // multiple files aren't guaranteed to be given in chronological order (e.g. one
+      // per clip, listed in a different order than they were recorded).
+      good.sort((a, b) => a.time - b.time)
 
       const maxGap = opts.maxGap ?? 3
       const channels = {
@@ -127,8 +156,8 @@ export default function gpx(opts = {}) {
 
       if (placed === 0) {
         throw new Error(
-          `provider-gpx: parsed ${good.length} point(s) from ${path} but none fall within the ` +
-            `rendered timeline's wall clock — check the sidecar covers the same time window as the footage`,
+          `provider-gpx: parsed ${good.length} point(s) from ${paths.join(', ')} but none fall within the ` +
+            `rendered timeline's wall clock — check the sidecar(s) cover the same time window as the footage`,
         )
       }
 
