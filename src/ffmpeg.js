@@ -6,6 +6,19 @@ import { join, resolve } from 'node:path'
 
 let seq = 0
 
+// Every spawned ffmpeg subprocess, tracked so a CLI-level SIGINT/SIGTERM handler
+// (cli.js) can kill them explicitly — relying solely on the OS delivering the signal
+// to the whole process group has proven unreliable in practice (a Ctrl+C has been
+// observed leaving ffmpeg running, especially one spawned indirectly via a `--jobs`
+// chunk child process).
+export const activeFfmpegProcs = new Set()
+
+function track(proc) {
+  activeFfmpegProcs.add(proc)
+  proc.once('close', () => activeFfmpegProcs.delete(proc))
+  return proc
+}
+
 /**
  * Decode a single video frame at `atSec` and return it as PNG bytes. `-ss` before
  * `-i` is a fast (keyframe) seek — fine for a preview thumbnail. Used by
@@ -15,7 +28,7 @@ export function extractFrame(file, atSec, { ffmpeg = 'ffmpeg', onCommand = null 
   const args = ['-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, atSec)), '-i', file, '-frames:v', '1', '-f', 'image2', '-vcodec', 'png', '-']
   onCommand?.([ffmpeg, ...args])
   return new Promise((resolveP, reject) => {
-    const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const proc = track(spawn(ffmpeg, args, { stdio: ['ignore', 'pipe', 'pipe'] }))
     const chunks = []
     let err = ''
     proc.stdout.on('data', (d) => chunks.push(d))
@@ -65,7 +78,7 @@ export function concatCopy(files, output, { ffmpeg = 'ffmpeg', creationTime = nu
         }
       }
     }
-    const proc = spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'inherit'] })
+    const proc = track(spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'inherit'] }))
     proc.on('error', (e) => {
       cleanup()
       reject(new Error(`Unable to run ffmpeg (${e.message})`))
@@ -181,7 +194,7 @@ export class FfmpegPipe {
     args.push(this.output)
 
     this.onCommand?.([this.ffmpeg, ...args])
-    this.proc = spawn(this.ffmpeg, args, { stdio: ['pipe', 'inherit', 'inherit'] })
+    this.proc = track(spawn(this.ffmpeg, args, { stdio: ['pipe', 'inherit', 'inherit'] }))
     this.closed = once(this.proc, 'close')
     return this
   }

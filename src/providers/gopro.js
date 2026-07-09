@@ -21,6 +21,8 @@
  */
 // Telemetry extraction lives in the standalone `gpx-from-gopro` package (split out
 // of `gpx-stabilizer` core, which is now zero-dep); see its docs/export-contract.md.
+import { basename } from 'node:path'
+
 import { readGoproTelemetry } from 'gpx-from-gopro'
 
 import { gradientSamples, speedSamples } from '../gradient.js'
@@ -98,6 +100,10 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  *   "signal lost" (channel goes invalid → widgets dim), e.g. mid-track fix loss
  * @param {number} [opts.gradeWindowM=15]  distance window (m) the gradient slope is
  *   measured over — wider = smoother, since GPS altitude is noisy per-sample
+ * @param {(msg:string)=>void} [opts.onLog]  progress callback — extraction is
+ *   sequential, one file at a time (each spawns its own ffmpeg dump + gpx-stabilizer
+ *   analysis), so a multi-clip folder can otherwise sit silent for minutes; called
+ *   once per file, before it starts
  * @returns {{name, data}} a movie-layers data provider
  */
 export default function gopro(opts = {}) {
@@ -154,7 +160,9 @@ export default function gopro(opts = {}) {
               ...(opts.mode ? { mode: opts.mode } : {}),
             }
 
-      for (const target of targets) {
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i]
+        opts.onLog?.(`gopro: telemetry ${i + 1}/${targets.length} — ${basename(target.path)}`)
         const res = await readGoproTelemetry(target.path, {
           ...(opts.rate != null ? { rate: opts.rate } : {}),
           stabilize: stab,

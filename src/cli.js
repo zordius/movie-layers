@@ -22,13 +22,18 @@ import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { Engine, Source } from './index.js'
-import { concatCopy, DEFAULT_OUTPUT_ARGS } from './ffmpeg.js'
+import { activeFfmpegProcs, concatCopy, DEFAULT_OUTPUT_ARGS } from './ffmpeg.js'
 import gopro from './providers/gopro.js'
 import gpx from './providers/gpx.js'
 import dashboard from './providers/dashboard.js'
 import datetime from './providers/datetime.js'
 import mapProvider from './providers/map.js'
 import { resolveProfile, detectHwEncoder, detectHwDecode, BUILTIN_PROFILES } from './profiles.js'
+
+// --jobs chunk child processes, tracked so a SIGINT/SIGTERM handler (registered in
+// main()) can kill them explicitly instead of relying on the OS to deliver the signal
+// to the whole process group — see the matching note on ffmpeg.js's activeFfmpegProcs.
+const activeChildren = new Set()
 
 const USAGE = `movie-layers — glue clips into one video, with a telemetry overlay
 
@@ -427,12 +432,17 @@ async function renderParallel({
       const argv = [cliPath, ...base, '--range', `${s},${e}`, '--out', chunks[i], '--quiet', '--precomputed', precomputedPath]
       return new Promise((res, rej) => {
         const p = spawn(process.execPath, argv, { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] })
+        activeChildren.add(p)
         p.on('message', (msg) => {
           chunkI[i] = msg.i
           onChunkProgress()
         })
-        p.on('error', rej)
+        p.on('error', (e) => {
+          activeChildren.delete(p)
+          rej(e)
+        })
         p.on('close', (code) => {
+          activeChildren.delete(p)
           if (code !== 0) return rej(new Error(`chunk ${i} (${s.toFixed(1)}–${e.toFixed(1)}s) exited ${code}`))
           chunkI[i] = chunkN[i] // this chunk is done, regardless of its last reported message
           log(`  chunk ${++done}/${ranges.length} done`)
@@ -459,6 +469,34 @@ async function renderParallel({
 }
 
 async function main() {
+  // A Ctrl+C (or a kill) has been observed leaving ffmpeg (and --jobs chunk children)
+  // running rather than dying with the parent — relying solely on the OS delivering
+  // the signal to the whole process group isn't reliable enough here, so kill every
+  // tracked subprocess explicitly before exiting. Chunk children are themselves a full
+  // `cli.js` invocation, so each one runs this same handler for its own ffmpeg.
+  let killing = false
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    process.on(sig, () => {
+      if (killing) return
+      killing = true
+      for (const p of activeChildren) {
+        try {
+          p.kill(sig)
+        } catch {
+          /* already gone */
+        }
+      }
+      for (const p of activeFfmpegProcs) {
+        try {
+          p.kill(sig)
+        } catch {
+          /* already gone */
+        }
+      }
+      process.exit(sig === 'SIGINT' ? 130 : 143)
+    })
+  }
+
   const args = parseArgs(process.argv.slice(2))
   if (args.help || args._.length === 0) {
     console.log(USAGE)
@@ -539,7 +577,7 @@ async function main() {
   } else if (hasGps) {
     // elevation smoothing is the provider default (clean gradient); --no-stabilize = raw
     const raw = !!args.noStabilize
-    dataProvider = gopro(raw ? { stabilize: false } : { mode: args.mode })
+    dataProvider = gopro(raw ? { stabilize: false, onLog: log } : { mode: args.mode, onLog: log })
     log(`  source: embedded GoPro GPS${raw ? ' (raw)' : ' (smoothed)'}${args.mode && !raw ? `, mode ${args.mode}` : ''}`)
     if (raw && args.mode) log(`  note: --mode ${args.mode} ignored — --no-stabilize disables analysis entirely`)
   } else {
