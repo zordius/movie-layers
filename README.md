@@ -40,25 +40,23 @@ overlays/dashboards; out of scope here.)
 The floor is **stitch the clips into one video**; a telemetry **dashboard** is added
 on top when the footage carries GPS (embedded or a sidecar `.gpx`).
 
-Not published to npm yet — clone it and run the CLI straight out of the checkout with
-`npx` (no global install, no `npm link` needed):
+Published on npm — run it with `npx` (no install needed), or `npm install -g movie-layers`
+for a bare `movie-layers` command:
 
 ```bash
-git clone https://github.com/zordius/movie-layers.git
-cd movie-layers && npm install
-
 npx movie-layers GX065132.MP4                    # → GX065132-overlay.mp4 (GoPro auto-dashboard)
 npx movie-layers ./ride-folder                   # concat every clip in the folder (sorted)
 npx movie-layers GH010001.MP4 GH020001.MP4       # concat two clips into one timeline
 npx movie-layers clip.mp4 --gpx ride.gpx         # telemetry from a sidecar .gpx
+npx movie-layers clip.mp4 --gpx a.gpx,b.gpx      # or from a folder of .gpx files (dir or comma-list)
 npx movie-layers GX065132.MP4 --map              # OpenStreetMap basemap under the track map
 npx movie-layers plain.mp4                       # no GPS → just stitch/encode (no dashboard)
 npx movie-layers clip.mp4 --snapshot --at 30 --open  # preview PNG at 30 s, then open it
 ```
 
-`npx` finds `movie-layers` from the clone's own `package.json` — nothing to publish or
-install globally. Want a bare `movie-layers` command instead of the `npx` prefix? Run
-`npm link` (or `npm install -g .`) once from the clone.
+Prefer running from a clone (to hack on it, or use the bundled examples below)? Clone +
+`npm install`, then `npx movie-layers ...` resolves to the checkout's own `package.json`
+instead of the published one — same commands, no extra setup.
 
 Inputs are clips and/or directories (a directory expands to its videos, sorted);
 several inputs concat into one timeline (same resolution / fps), telemetry
@@ -145,22 +143,30 @@ Done:
       multi-clip concat, GoPro auto-dashboard (GPS cleaned + elevation-smoothed by
       default for a stable gradient), no-GPS pass-through (stitch only), aspect-aware
       layout + `--flip`, `--snapshot` PNG preview, staged logging + ETA, `--open`,
-      `--quiet`, `--gpx` / `--clock-offset` / `--no-stabilize` flags
+      `--quiet`, `--gpx` (single file, comma-separated files, or a directory — all
+      merge into one track) / `--clock-offset` / `--no-stabilize` / `--mode NAME`
+      (gpx-stabilizer analysis preset, e.g. `ski`) flags. Widgets that need GPS or
+      elevation are dropped gracefully (not a crash) when the whole clip has none —
+      never based on just a `--range` window
 - [x] Dashboard presentation: per-gauge display smoothing (default-on,
       `--no-smooth`) + GPS-derived `speed` fallback (when device speed is absent) —
       see [`docs/dashboard-spec.md`](docs/dashboard-spec.md)
 - [x] `provider-map`: optional OpenStreetMap basemap under the big track map
       (`--map`, off by default), projected with the track's own fit so it stays to
       scale; tiles fetched once and disk-cached (`--map-cache`, default
-      `~/.cache/movie-layers/tiles`; `--map-zoom` overrides the auto fit). The
-      track's small follow-circle inset keeps its own view (no basemap)
-- [x] Encode + render speed: detection-based hardware-encoder **auto-upgrade**
-      (videotoolbox / nvenc / qsv / amf — `--no-hw` forces software, explicit
-      `--profile` overrides), ffmpeg `--profile` (built-in + user JSON), **`--jobs N`**
-      parallel-chunk render with lossless concat (a warm-up overlap keeps gauge
-      smoothing seamless across seams), `--range START,END` sub-clip render (each side
-      is plain seconds or clock time, e.g. `1:23,2:00`), and
-      `--widget-fps` (overlay draw rate, independent of output `--fps`)
+      `~/.cache/movie-layers/tiles`; `--map-zoom` overrides the auto fit); resolves
+      and labels the ski resort name (JA/EN, toggling every 10s) the track passes
+      through, via an Overpass API lookup, disk-cached per area. The track's small
+      follow-circle inset keeps its own view (no basemap)
+- [x] Encode + render speed: detection-based hardware **encode** auto-upgrade
+      (videotoolbox / nvenc / qsv / amf) and **decode** hwaccel auto-detect
+      (`--no-hw` forces software for both, explicit `--profile` overrides), ffmpeg
+      `--profile` (built-in + user JSON), `--bitrate RATE` (overrides `-b:v`
+      regardless of source), **`--jobs N`** parallel-chunk render with lossless
+      concat (a warm-up overlap keeps gauge smoothing seamless across seams, and
+      composes with `--range`), `--range START,END` sub-clip render (each side is
+      plain seconds or clock time, e.g. `1:23,2:00`), and `--widget-fps` (overlay
+      draw rate, independent of output `--fps`)
 
 Planned:
 
@@ -171,5 +177,6 @@ Planned:
 
 ## License
 
-GPL-3.0-or-later — it derives design from the GPL'd `gopro-dashboard-overlay`.
-Attribution: original by James Richardson / time4tea.
+MIT — see [`LICENSE`](LICENSE). Design inspiration only, not a derivative of its
+source: the original [`gopro-dashboard-overlay`](https://github.com/time4tea/gopro-dashboard-overlay)
+(Python) by James Richardson / time4tea is GPL-3.0-or-later.
