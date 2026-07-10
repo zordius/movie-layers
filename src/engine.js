@@ -327,32 +327,38 @@ export class Engine {
 
     // Per-segment timing for ALL segments (file-bearing AND fileless), so a
     // sidecar provider can UTC-align its samples against the timeline even with no
-    // base video (where `sources` is empty). `startUtc` here is the structural
-    // anchor (explicit / creation_time) — GPS upgrades land later in
-    // _resolveClocks; sidecar best-clock-wins (spec §5) is a separate follow-up.
-    let acc = 0
-    const segmentInfos = this.segments.map((seg, i) => {
-      const info = { index: i, offset: acc, startUtc: seg.startUtc, durationSec: seg.durationSec }
-      acc += seg.durationSec
-      return info
-    })
+    // base video (where `sources` is empty). Rebuilt after clock resolution so the
+    // second load round (below) sees the upgraded anchors.
+    const segmentInfos = () => {
+      let acc = 0
+      return this.segments.map((seg, i) => {
+        const info = { index: i, offset: acc, startUtc: seg.startUtc, durationSec: seg.durationSec }
+        acc += seg.durationSec
+        return info
+      })
+    }
 
-    // load all data providers once, up front (parse → channels); each gets the
-    // shared sources, the segment timeline, and its own config
-    const dataset = await DataSet.load(this.dataProviders, {
-      sources: this.sources.filter(Boolean),
-      segments: segmentInfos,
-      config: this.dataConfig,
-      merge: this.channelMerge,
-    })
+    // Two-phase data load (spec §5). A provider marked `needsClock: true` (a
+    // sidecar like provider-gpx) aligns its samples against the segments' wall
+    // clocks, so it must see the BEST anchors — load the clock-producing providers
+    // first, fold their GPS candidates into each segment (_resolveClocks), then
+    // load the clock-aligned providers against the resolved anchors. Clock
+    // candidates from the second round are not re-adjudicated (a no-`cts` sidecar
+    // can't anchor the video — spec §5 "wrong camera clock").
+    const eager = this.dataProviders.filter((p) => p.needsClock !== true)
+    const aligned = this.dataProviders.filter((p) => p.needsClock === true)
+    const shared = { sources: this.sources.filter(Boolean), config: this.dataConfig, merge: this.channelMerge }
+    const dataset = await DataSet.load(eager, { ...shared, segments: segmentInfos() })
+
+    // Clock resolution (spec §5): fold the providers' per-segment GPS candidates
+    // into each segment's anchor — done here, after the first load round and before
+    // the aligned round + ffmpeg anchor + Timeline snapshot read segment.startUtc.
+    this._resolveClocks(dataset)
+
+    if (aligned.length) await dataset.loadFrom(aligned, { ...shared, segments: segmentInfos() })
 
     // timezone precedence: explicit Engine config > provider-derived (e.g. GPS) > default
     this.timezone = this._timezone ?? dataset.timezone ?? null
-
-    // Clock resolution (spec §5): fold the providers' per-segment GPS candidates
-    // into each segment's anchor — done here, after data load and before the
-    // ffmpeg anchor + Timeline snapshot read segment.startUtc.
-    this._resolveClocks(dataset)
 
     return {
       width: this.width,

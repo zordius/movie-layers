@@ -153,9 +153,12 @@ Time alignment differs (but both happen up front):
 (sampleUtc − startUtc)/1000`; points outside every window are dropped. Produces
 `gps`/`speed`/`altitude` channels and merges via §6. `.fit` (binary) needs its own
 decoder — the alignment path is format-agnostic, so a FIT reader drops straight in.
-Alignment uses the clock resolved at data-load time (explicit > `creation_time`);
-letting an authoritative sidecar clock override a weak *video* clock is the
-separate "best-clock-wins" item (§5).
+Alignment runs in the engine's **second data round** (two-phase load, §5): the
+provider is marked `needsClock: true`, so it loads after clock resolution and
+aligns against the best anchors — on a GoPro clip that's the in-video **GPS clock
+(true UTC)**, not `creation_time` (a camera clock, often *local* time stamped as
+UTC). A sidecar clock overriding a weak *video* clock ("best-clock-wins") remains
+out of scope — a sidecar has no `cts` link to the frames (§5).
 
 **Shared `Source` — container probe only.** The base video's container is
 probed **once** (cheap, format-agnostic ffprobe) and shared with the engine and
@@ -254,6 +257,20 @@ engine:
                     anchors whose delta disagrees with cumulative duration
 ```
 
+### Two-phase data load — clock-aligned providers see resolved anchors ✅
+
+A data provider that *aligns against* the wall clock (a sidecar, §3) is marked
+**`needsClock: true`** and loads in a **second round**: the engine loads the
+clock-producing providers first, runs the clock resolution above, rebuilds the
+per-segment timeline with the upgraded anchors, and only then loads the
+`needsClock` providers. So a GoPro-video + GPX render aligns the sidecar to the
+clip's GPS-verified true-UTC start instead of a wrong `creation_time` (GoPro
+stamps the camera's *local* clock with a `Z`). Clock candidates returned by a
+second-round provider are not re-adjudicated (a no-`cts` sidecar can't anchor
+the video — below). The CLI backs a `--gpx` render with a **clock-only**
+`provider-gopro` (`gopro({ clockOnly: true })` — clocks + timezone, no telemetry
+channels) whenever the clip also carries embedded GPS.
+
 ### continue-time × gap (the v3→v4 case)
 If `v4` has no GPS, the engine **continues** `v3`'s GPS anchor (`v3.startUtc +
 v3.duration`) → `v3→v4` is seamless. Because `v4`'s anchor is *derived* (not an
@@ -261,6 +278,8 @@ independent reading), gap detection does **not** fire — which is the desired
 behaviour.
 
 ### Wrong camera clock → manual `clockOffsetSec` (not auto best-clock-wins)
+(When the clip itself carries GPS, this section is moot — the two-phase load
+above anchors on the in-video GPS clock, no correction needed.)
 When the video clock is wrong (a mis-set camera clock — the common real cause)
 but a sidecar (Garmin GPX) has authoritative GPS UTC, you **cannot** recover the
 correction automatically: unlike in-video GPS (whose samples carry a media
@@ -359,7 +378,10 @@ a verified neighbour) + gap detection, `frame.segment.{confidence,gap}`;
 **regression-verified true start** (`gpx-from-gopro` regresses UTC vs media-offset
 `cts`, slope ≈ 1 gate; provider anchors on the verified start, restoring pre-display gray);
 **manual `clockOffsetSec`** — signed seconds nudge fixing a wrong camera clock,
-correcting both sidecar alignment and displayed `dateTime` (§5).
+correcting both sidecar alignment and displayed `dateTime` (§5); **two-phase data
+load** — `needsClock` (sidecar) providers load after clock resolution, so a
+GoPro + `--gpx` render aligns to the GPS true-UTC anchors (CLI adds a clock-only
+`provider-gopro` when the clip has embedded GPS) (§5).
 
 🔜 Planned: sidecar `.fit` UTC alignment (binary FIT decoder — the `.gpx`
 alignment path is done, §3); provider-private `setup` → shared resources; perf

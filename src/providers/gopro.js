@@ -112,6 +112,11 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  *   Default 15; ski mode (`opts.mode === 'ski'`) defaults to 50 instead — ski slope
  *   readings are about the run's pitch, not per-turn micro-relief, and carving
  *   swings the 15 m window's reading wildly even on a constant-pitch slope
+ * @param {boolean} [opts.clockOnly=false]  report ONLY the per-segment GPS clock
+ *   candidates + timezone, no telemetry channels — for a `--gpx` render where the
+ *   sidecar supplies the telemetry but the embedded GPS supplies the true-UTC
+ *   anchors the sidecar aligns against (spec §5 two-phase load; the container's
+ *   `creation_time` is a camera clock, often local time stamped as UTC)
  * @param {(msg:string)=>void} [opts.onLog]  progress callback — extraction is
  *   sequential, one file at a time (each spawns its own ffmpeg dump + gpx-stabilizer
  *   analysis), so a multi-clip folder can otherwise sit silent for minutes; called
@@ -199,7 +204,9 @@ export default function gopro(opts = {}) {
         // available, else this segment's own first fix (good[0]).
         const verified = res.clock?.verified === true
         const anchor = verified && finite(res.startUtc) ? res.startUtc : good[0].time
-        appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec, skiGrade, maxGap)
+        if (!opts.clockOnly) {
+          appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec, skiGrade, maxGap)
+        }
         clocks.push({ sourceIndex: target.sourceIndex, startUtc: anchor, confidence: 'gps', verified })
       }
 

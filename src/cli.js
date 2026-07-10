@@ -578,6 +578,7 @@ async function main() {
 
   // choose the data provider: --gpx sidecar > embedded GoPro GPS > none (pass-through)
   let dataProvider = null
+  let clockProvider = null // clock-only embedded-GPS provider backing a --gpx render (§5)
   const hasSpeed = true
   if (args.gpx) {
     const gpxFiles = expandGpxInputs(args.gpx)
@@ -592,6 +593,14 @@ async function main() {
         : `  source: sidecar gpx ${gpxFiles[0]}`,
     )
     if (args.mode) log(`  note: --mode ${args.mode} ignored — only embedded GoPro GPS supports it`)
+    if (hasGps) {
+      // The sidecar aligns by wall clock, but a container `creation_time` is the
+      // camera clock — often LOCAL time stamped as UTC. The clip's own GPS carries
+      // true UTC, so extract it clock-only (no telemetry channels; the sidecar
+      // stays the telemetry source) to anchor the timeline the sidecar aligns to.
+      clockProvider = gopro({ clockOnly: true, stabilize: false, onLog: log })
+      log('  clock: embedded GPS anchors the timeline (sidecar aligns to true UTC)')
+    }
   } else if (hasGps) {
     // elevation smoothing is the provider default (clean gradient); --no-stabilize = raw
     const raw = !!args.noStabilize
@@ -657,7 +666,7 @@ async function main() {
 
   // providers (full dashboard with data; datetime-or-nothing without)
   const providers = dataProvider
-    ? [dataProvider, dashboard, datetime, ...(mapCfg ? [mapProvider] : [])]
+    ? [...(clockProvider ? [clockProvider] : []), dataProvider, dashboard, datetime, ...(mapCfg ? [mapProvider] : [])]
     : [datetime]
 
   // --precomputed <path> (internal — set by renderParallel() for a --jobs chunk): the

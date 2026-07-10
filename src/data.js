@@ -106,6 +106,7 @@ export class DataSet {
     this.channels = new Map()
     this.timezone = null // a constant tz candidate a data provider may derive (e.g. GPS → tz)
     this.clocks = new Map() // sourceIndex → wall-clock candidate { startUtc, confidence } (e.g. GPS), §5
+    this._owner = new Map() // channel name → provider name owning it (merge precedence across load rounds)
   }
 
   addChannel(name, unit, samples, maxGap) {
@@ -128,21 +129,32 @@ export class DataSet {
    *
    * (Mirrors gopro-dashboard-overlay's --gpx-merge OVERWRITE.)
    */
-  static async load(dataProviders, { sources = [], segments = [], config = {}, merge = {} } = {}) {
+  static async load(dataProviders, opts = {}) {
     const set = new DataSet()
-    const owner = new Map() // channel name -> provider name currently owning it
+    await set.loadFrom(dataProviders, opts)
+    return set
+  }
+
+  /**
+   * One load round, merging into THIS set. Callable more than once (the engine's
+   * two-phase load, spec §5: clock-producing providers first, then — after clock
+   * resolution — the `needsClock` providers that align against the resolved
+   * anchors); `_owner` persists across rounds so `merge` precedence still holds.
+   */
+  async loadFrom(dataProviders, { sources = [], segments = [], config = {}, merge = {} } = {}) {
+    const owner = this._owner
     for (const provider of dataProviders) {
       const result = await provider.data({ sources, segments, config })
       // a provider may report a constant timezone (e.g. derived from GPS); first wins
-      if (set.timezone == null && result?.timezone) set.timezone = result.timezone
+      if (this.timezone == null && result?.timezone) this.timezone = result.timezone
       // …and per-segment wall-clock candidates (e.g. GPS startUtc), keyed by source
       // index; first provider to claim a segment wins, the engine adjudicates (§5).
       // A singular `clock` is accepted as the N=1 shorthand (sourceIndex 0).
       const candidates = result?.clocks ?? (result?.clock ? [{ sourceIndex: 0, ...result.clock }] : [])
       for (const c of candidates) {
         const i = c?.sourceIndex ?? 0
-        if (c && !set.clocks.has(i)) {
-          set.clocks.set(i, {
+        if (c && !this.clocks.has(i)) {
+          this.clocks.set(i, {
             startUtc: c.startUtc,
             confidence: c.confidence ?? 'gps',
             verified: c.verified === true,
@@ -155,12 +167,11 @@ export class DataSet {
         const take =
           !owner.has(name) || (preferred !== undefined ? provider.name === preferred : true)
         if (take) {
-          set.addChannel(name, ch.unit, ch.samples ?? [], ch.maxGap)
+          this.addChannel(name, ch.unit, ch.samples ?? [], ch.maxGap)
           owner.set(name, provider.name)
         }
       }
     }
-    return set
   }
 
   /**

@@ -34,12 +34,16 @@
  * ({lat,lon}); `speed` / `altitude` when the track carries them; and `gradient`
  * derived from lat/lon/ele via the shared helper (same as provider-gopro).
  *
- * NOTE (best-clock-wins, spec §5): alignment uses the segment `startUtc` resolved
- * at data-load time (explicit > creation_time) — a GPS clock a video provider
- * derives is folded in LATER (engine `_resolveClocks`), so for a GoPro-video +
- * GPX-merge render the sidecar aligns to the video's container clock, not its
- * GPS-corrected start. Letting an authoritative sidecar clock override a weak
- * video clock is the separate "best-clock-wins" follow-up.
+ * NOTE (clock ordering, spec §5): this provider is marked `needsClock: true`, so
+ * the engine loads it in the SECOND data round — after every clock-producing
+ * provider (e.g. provider-gopro's per-segment GPS clocks) has loaded and
+ * `_resolveClocks` has upgraded the segment anchors. A GoPro-video + GPX-merge
+ * render therefore aligns the sidecar against the GPS-corrected start (true UTC),
+ * not the container's `creation_time` (a camera clock — often LOCAL time stamped
+ * with a `Z`). Without any GPS clock the anchors stay structural
+ * (explicit > creation_time), and a wrong camera clock still needs the manual
+ * `clockOffsetSec` — a sidecar has no `cts` link to the frames, so it can never
+ * anchor the video by itself (spec §5 "wrong camera clock").
  */
 import { readGpx } from 'gpx-stabilizer'
 
@@ -82,6 +86,8 @@ export default function gpx(opts = {}) {
   const name = opts.name ?? 'gpx'
   return {
     name,
+    // sidecar alignment reads segment wall clocks → load AFTER clock resolution
+    needsClock: true,
     async data({ segments = [], config = {} }) {
       const paths = opts.files ?? config.gpxFiles ?? (opts.file ?? config.gpxFile ? [opts.file ?? config.gpxFile] : null)
       if (!paths || paths.length === 0) {
@@ -155,9 +161,17 @@ export default function gpx(opts = {}) {
       }
 
       if (placed === 0) {
+        const iso = (ms) => new Date(ms).toISOString()
+        const gpxRange = good.length
+          ? `${iso(good[0].time)} … ${iso(good[good.length - 1].time)}`
+          : '(no timestamped points)'
+        const videoRange =
+          `${iso(Math.min(...anchored.map((s) => s.startUtc)))} … ` +
+          `${iso(Math.max(...anchored.map((s) => s.startUtc + s.durationSec * 1000)))}`
         throw new Error(
           `provider-gpx: parsed ${good.length} point(s) from ${paths.join(', ')} but none fall within the ` +
-            `rendered timeline's wall clock — check the sidecar(s) cover the same time window as the footage`,
+            `rendered timeline's wall clock — gpx range ${gpxRange}, video range ${videoRange} — ` +
+            `check the sidecar(s) cover the same time window as the footage`,
         )
       }
 

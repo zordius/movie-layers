@@ -138,7 +138,9 @@ Done:
 - [x] Clock resolution: per-segment pick (explicit > GPS > `creation_time`) +
       continue-time fill + back-derive + gap detection; channel-merge precedence;
       timezone resolution (explicit > provider > default); `clockOffsetSec`
-      manual fix for a wrong camera clock
+      manual fix for a wrong camera clock; two-phase data load — a sidecar
+      (`needsClock`) provider aligns after GPS clock resolution, so a GoPro +
+      `--gpx` render anchors to true UTC instead of a camera-local `creation_time`
 - [x] CLI: `movie-layers <video|dir> [...]` → stitch + overlay; directory input,
       multi-clip concat, GoPro auto-dashboard (GPS cleaned + elevation-smoothed by
       default for a stable gradient), no-GPS pass-through (stitch only), aspect-aware
