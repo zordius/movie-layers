@@ -529,7 +529,10 @@ class Gradient extends Layer {
     ctx.fillRect(bx, by, bw, bh)
     const alt = f.data.series('altitude') ?? []
     const half = 10 // seconds each side of "now"
-    if (alt.length) {
+    // Frozen (no valid gradient — standstill / signal hole) → no blue altitude
+    // profile either: the whole block reads as "no usable ele here", matching the
+    // grayed number, instead of a live-looking profile under a frozen gauge.
+    if (alt.length && sgr.valid) {
       // centring reference: the interpolated "now" value; before the channel has
       // started (ski gate — scalarAt is null outside the span), anchor on the first
       // (incoming) sample so the entering block slides in around the centreline,
