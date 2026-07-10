@@ -528,11 +528,9 @@ class Gradient extends Layer {
     ctx.fillStyle = 'rgba(0,0,0,0.3)'
     ctx.fillRect(bx, by, bw, bh)
     const alt = f.data.series('altitude') ?? []
+    const grad = f.data.series('gradient') ?? []
     const half = 10 // seconds each side of "now"
-    // Frozen (no valid gradient — standstill / signal hole) → no blue altitude
-    // profile either: the whole block reads as "no usable ele here", matching the
-    // grayed number, instead of a live-looking profile under a frozen gauge.
-    if (alt.length && sgr.valid) {
+    if (alt.length) {
       // centring reference: the interpolated "now" value; before the channel has
       // started (ski gate — scalarAt is null outside the span), anchor on the first
       // (incoming) sample so the entering block slides in around the centreline,
@@ -544,8 +542,16 @@ class Gradient extends Layer {
       const N = bw
       const ys = []
       // gap-aware sampling (3 s = the providers' default channel maxGap): a stretch
-      // with no altitude samples renders as a missing block, not a straight bridge
-      for (let i = 0; i <= N; i++) ys.push(scalarAt(alt, f.timeSec - half + (i / N) * 2 * half, 3))
+      // with no altitude samples renders as a missing block, not a straight bridge.
+      // Each column is ALSO gated on the gradient being valid at that column's own
+      // time — a standstill / signal hole has altitude but no usable slope, so its
+      // columns stay empty (no live-looking profile under a frozen gauge), while a
+      // run entering/leaving the ±10 s window still slides in/out gradually column
+      // by column instead of popping when the gauge itself un-freezes.
+      for (let i = 0; i <= N; i++) {
+        const tc = f.timeSec - half + (i / N) * 2 * half
+        ys.push(scalarAt(grad, tc, 3) == null ? null : scalarAt(alt, tc, 3))
+      }
       const vs = 2 // fixed scale: 1 m = 2 px (no dynamic zoom)
       ctx.save()
       ctx.beginPath()
