@@ -89,6 +89,30 @@ export function listEncoders(ffmpeg = 'ffmpeg') {
   return set
 }
 
+let _encodable = null
+/**
+ * Set of CODEC names this ffmpeg build can encode (`ffmpeg -codecs`, 'E' flag), cached.
+ * Complements listEncoders(): `-vcodec` accepts either an encoder name (h264_nvenc) or
+ * a codec name that ffmpeg maps to its default encoder (vp9 → libvpx-vp9) — only a name
+ * in NEITHER set is truly unavailable.
+ */
+export function listEncodableCodecs(ffmpeg = 'ffmpeg') {
+  if (_encodable) return _encodable
+  let out = ''
+  try {
+    out = execFileSync(ffmpeg, ['-hide_banner', '-codecs'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    out = '' // ffmpeg missing / errored → empty, caller treats the check as unavailable
+  }
+  const set = new Set()
+  for (const line of out.split('\n')) {
+    const m = line.match(/^\s*[D.]E\S{4}\s+(\S+)/) // " DEV.LS h264  ..." → name (E = encodable)
+    if (m) set.add(m[1])
+  }
+  _encodable = set
+  return set
+}
+
 /**
  * Best available hardware H.264 encoder, or null when none is present (→ software). This
  * is the "detection-based auto-upgrade": picked automatically unless the user opts out
@@ -147,9 +171,10 @@ export function defaultProfileFile() {
 /**
  * Resolve a profile name to `{ input, output, filter }`. A user file (if present)
  * is merged over the built-ins by name. Throws — with the available names — on an
- * unknown name, an unreadable/!JSON file, or a profile missing its `output` array.
+ * unknown name, an unreadable/!JSON file, a profile missing its `output` array, or
+ * a profile whose encoder this ffmpeg build lacks (checked via `listEncoders`).
  */
-export function resolveProfile(name, { file = defaultProfileFile() } = {}) {
+export function resolveProfile(name, { file = defaultProfileFile(), ffmpeg = 'ffmpeg' } = {}) {
   let user = {}
   if (existsSync(file)) {
     try {
@@ -165,6 +190,23 @@ export function resolveProfile(name, { file = defaultProfileFile() } = {}) {
   }
   if (!Array.isArray(p.output)) {
     throw new Error(`profile "${name}" must have an \`output\` array of ffmpeg args`)
+  }
+  // Fail early, in words, when the profile names an encoder this ffmpeg build lacks
+  // (e.g. nvgpu's h264_nvenc on a videotoolbox-only mac build). Without this, the
+  // profile's encoder-PRIVATE options (-rc:v, -spatial-aq) die in ffmpeg's argument
+  // parser with an unhelpful "Option not found" — private options are only parseable
+  // when their encoder exists. An empty listEncoders() (ffmpeg missing) skips the
+  // check; the run then fails later with the clearer "Unable to run ffmpeg".
+  // `-vcodec` takes an encoder name OR a codec name (mapped to its default encoder),
+  // so a name missing from BOTH sets is what's actually unavailable.
+  const ci = p.output.findIndex((a) => a === '-vcodec' || a === '-c:v' || a === '-codec:v')
+  const codec = ci >= 0 ? p.output[ci + 1] : null
+  const encoders = listEncoders(ffmpeg)
+  if (codec && encoders.size && !encoders.has(codec) && !listEncodableCodecs(ffmpeg).has(codec)) {
+    throw new Error(
+      `profile "${name}" needs encoder "${codec}", which this ffmpeg build does not have ` +
+        `(see \`ffmpeg -encoders\`)`,
+    )
   }
   return { input: Array.isArray(p.input) ? p.input : [], output: p.output, filter: typeof p.filter === 'string' ? p.filter : null }
 }
