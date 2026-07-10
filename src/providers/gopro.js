@@ -61,7 +61,7 @@ function goodFixes(points) {
  * (gray pre-display before GPS lock); with the first-fix fallback it lands at the
  * segment start (pre-lock delay unknown, left out).
  */
-function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, speedWindowSec) {
+function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, speedWindowSec, ski) {
   const ts = good.map((p) => offset + (p.time - anchorUtc) / 1000)
   for (let i = 0; i < good.length; i++) {
     const p = good[i]
@@ -73,9 +73,10 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
   // Gradient (and a derived-speed fallback) via the shared helpers. Cumulative
   // distance is per-segment (segments may be spatially disjoint), so call them
   // here — per segment — not across the whole track. The gradient helper skips
-  // non-finite `ele` in the output but still counts it toward distance.
+  // non-finite `ele` in the output but still counts it toward distance. Ski mode
+  // switches the gradient's distance metric to straight-line/chord (see gradient.js).
   const pts = good.map((p, i) => ({ lat: p.lat, lon: p.lon, ele: p.ele, t: ts[i] }))
-  for (const s of gradientSamples(pts, { windowM: W, minSpan })) channels.gradient.samples.push(s)
+  for (const s of gradientSamples(pts, { windowM: W, minSpan, direct: ski })) channels.gradient.samples.push(s)
   // derived speed is held aside; only used if the device reported none anywhere (below)
   for (const s of speedSamples(pts, { windowSec: speedWindowSec })) dspeed.push(s)
 }
@@ -86,8 +87,12 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  * @param {object} [opts]
  * @param {string} [opts.file]   telemetry source; defaults to the matching base-video source
  * @param {number} [opts.rate]   GPS resample rate in Hz (omit = native ~18 Hz)
- * @param {boolean} [opts.smooth=true]  elevation smoothing (gpx-stabilizer) → a
- *   slope-stable `gradient`. Default ON; implies cleaning. Set `stabilize:false` for raw.
+ * @param {boolean} [opts.smooth=true]  elevation smoothing → a slope-stable `gradient`.
+ *   Default ON; implies cleaning; `stabilize:false` disables it. Implemented via
+ *   gpx-stabilizer's `gradeBound` (despike + a 30 m distance-domain smoothing pass —
+ *   the standalone `smooth` module was folded into it, 2026-07-10). Only consulted
+ *   when NO `opts.mode` is set: a mode preset governs its own elevation handling
+ *   (e.g. `MODES.ski` already bundles the same despike-then-smooth).
  * @param {boolean|object} [opts.stabilize]  gpx-stabilizer noise removal; `false`
  *   forces raw points (disables smoothing too). NOTE: cleaning drops each point's
  *   `fix`, so fix-filtering is skipped — it trusts the cleaner to have removed
@@ -98,8 +103,11 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  *   when `opts.stabilize === false` (raw — nothing runs `stabilize()` at all).
  * @param {number} [opts.maxGap=3]      seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim), e.g. mid-track fix loss
- * @param {number} [opts.gradeWindowM=15]  distance window (m) the gradient slope is
- *   measured over — wider = smoother, since GPS altitude is noisy per-sample
+ * @param {number} [opts.gradeWindowM]  distance window (m) the gradient slope is
+ *   measured over — wider = smoother, since GPS altitude is noisy per-sample.
+ *   Default 15; ski mode (`opts.mode === 'ski'`) defaults to 50 instead — ski slope
+ *   readings are about the run's pitch, not per-turn micro-relief, and carving
+ *   swings the 15 m window's reading wildly even on a constant-pitch slope
  * @param {(msg:string)=>void} [opts.onLog]  progress callback — extraction is
  *   sequential, one file at a time (each spawns its own ffmpeg dump + gpx-stabilizer
  *   analysis), so a multi-clip folder can otherwise sit silent for minutes; called
@@ -132,7 +140,11 @@ export default function gopro(opts = {}) {
       }
 
       const maxGap = opts.maxGap ?? 3
-      const W = opts.gradeWindowM ?? 15
+      const W = opts.gradeWindowM ?? (opts.mode === 'ski' ? 50 : 15) // see the gradeWindowM doc above
+      // ski mode switches the gradient's distance metric to straight-line/chord
+      // between the chosen points — a carving descent reads as the slope's own pitch
+      // instead of being diluted by every turn's extra path length (gradient.js doc)
+      const skiGrade = opts.mode === 'ski'
       const minSpan = 3 // m — below this, slope is dominated by GPS jitter
       const channels = {
         gps: { unit: 'deg', maxGap, samples: [] },
@@ -147,17 +159,25 @@ export default function gopro(opts = {}) {
 
       // Elevation smoothing (default ON): gpx-stabilizer rewrites each survivor's `ele`
       // to a slope-stable value, so the derived `gradient` stops jittering (raw GPS
-      // altitude is the noisiest axis). `smooth` requires cleaning, so it forces
-      // stabilize on; `stabilize: false` keeps raw points (no clean, no smooth).
-      // See docs/gpx-smoothing-integration.md.
+      // altitude is the noisiest axis). The lib's standalone `smooth` module is GONE
+      // (folded into gradeBound's optional post-despike pass, 2026-07-10 — passing
+      // `smooth: true` through would be a silent no-op now), so modeless smoothing maps
+      // to `gradeBound` + the same 30 m window the old module used; a mode preset
+      // governs its own elevation handling instead (MODES.ski bundles the identical
+      // despike-then-smooth), so `smooth` isn't consulted there. `smooth` requires
+      // cleaning, so it forces stabilize on; `stabilize: false` keeps raw points
+      // (no clean, no smooth). See docs/gpx-smoothing-integration.md.
       const smooth = opts.smooth ?? true
       const stab =
         opts.stabilize === false
           ? false
           : {
               ...(typeof opts.stabilize === 'object' ? opts.stabilize : {}),
-              ...(smooth ? { smooth: true } : {}),
-              ...(opts.mode ? { mode: opts.mode } : {}),
+              ...(opts.mode
+                ? { mode: opts.mode }
+                : smooth
+                  ? { gradeBound: { GRADE_SMOOTH_WIN_M: 30 } }
+                  : {}),
             }
 
       for (let i = 0; i < targets.length; i++) {
@@ -175,7 +195,7 @@ export default function gopro(opts = {}) {
         // available, else this segment's own first fix (good[0]).
         const verified = res.clock?.verified === true
         const anchor = verified && finite(res.startUtc) ? res.startUtc : good[0].time
-        appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec)
+        appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec, skiGrade)
         clocks.push({ sourceIndex: target.sourceIndex, startUtc: anchor, confidence: 'gps', verified })
       }
 

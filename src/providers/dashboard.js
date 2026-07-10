@@ -148,12 +148,20 @@ function gpsAt(series, t) {
   return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f }
 }
 
-// interpolate a numeric channel value from its t-sorted series at time `t`
-function scalarAt(series, t) {
+// interpolate a numeric channel value from its t-sorted series at time `t` — null
+// OUTSIDE the series' span (no clamped extension): a channel that hasn't started yet
+// (e.g. ski mode's altitude/gradient gate at a standstill) or has ended must render
+// as a gap ("cliff") in the mini-profile, not as a flat made-up block.
+// `maxGapSec` additionally refuses to interpolate ACROSS an in-stream hole wider than
+// that (→ null): a stretch with no samples (e.g. elevation dropped as unrecoverable
+// during a lift boarding) must also render as a gap, not a straight bridge. Default
+// Infinity = bridge everything (used for the centring pan, where continuity wins).
+function scalarAt(series, t, maxGapSec = Infinity) {
   const p = series
   if (!p.length) return null
-  if (t <= p[0].t) return p[0].value
-  if (t >= p[p.length - 1].t) return p[p.length - 1].value
+  if (t < p[0].t || t > p[p.length - 1].t) return null
+  if (t === p[0].t) return p[0].value
+  if (t === p[p.length - 1].t) return p[p.length - 1].value
   let lo = 0
   let hi = p.length - 1
   while (hi - lo > 1) {
@@ -163,6 +171,7 @@ function scalarAt(series, t) {
   }
   const a = p[lo]
   const b = p[hi]
+  if (b.t - a.t > maxGapSec) return null
   const f = b.t - a.t ? (t - a.t) / (b.t - a.t) : 0
   return a.value + (b.value - a.value) * f
 }
@@ -521,10 +530,19 @@ class Gradient extends Layer {
     const alt = f.data.series('altitude') ?? []
     const half = 10 // seconds each side of "now"
     if (alt.length) {
-      const cur = scalarAt(alt, f.timeSec) ?? 0
+      // centring reference: the interpolated "now" value; before the channel has
+      // started (ski gate — scalarAt is null outside the span), anchor on the first
+      // (incoming) sample so the entering block slides in around the centreline,
+      // and symmetrically on the last one after the channel ends. Deliberately NO
+      // maxGapSec here: across an in-stream elevation hole the centreline PANS
+      // smoothly from the pre-gap altitude to the post-gap one (the blue blocks at
+      // both edges stay registered to it), instead of snapping at the gap's end.
+      const cur = scalarAt(alt, f.timeSec) ?? (f.timeSec < alt[0].t ? alt[0].value : alt[alt.length - 1].value)
       const N = bw
       const ys = []
-      for (let i = 0; i <= N; i++) ys.push(scalarAt(alt, f.timeSec - half + (i / N) * 2 * half))
+      // gap-aware sampling (3 s = the providers' default channel maxGap): a stretch
+      // with no altitude samples renders as a missing block, not a straight bridge
+      for (let i = 0; i <= N; i++) ys.push(scalarAt(alt, f.timeSec - half + (i / N) * 2 * half, 3))
       const vs = 2 // fixed scale: 1 m = 2 px (no dynamic zoom)
       ctx.save()
       ctx.beginPath()

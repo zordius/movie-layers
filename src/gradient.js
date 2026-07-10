@@ -31,15 +31,28 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n)
  * metres the slope is GPS jitter, so the previous value is held. Points with a
  * non-finite `ele` are skipped in the output but still count toward distance.
  *
+ * Two distance metrics, `opts.direct` picks one — BOTH the baseline selection and the
+ * slope's denominator use the same metric:
+ * - default (path): cumulative along-track distance. The grade you actually ride —
+ *   `d(ele)/d(distance travelled)` (a road sign's / bike computer's definition), and a
+ *   monotone denominator (numerically stable through hairpins).
+ * - `direct: true` (chord): straight-line distance between the two chosen points.
+ *   The terrain's own pitch — a carving/traversing descent reads as the SLOPE's
+ *   steepness instead of being diluted by the extra path length of every turn (a
+ *   skier's definition; provider-gopro turns this on in ski mode). The hairpin
+ *   degeneracy (chord → 0 while path grows) is inherent to the metric; `minSpan`
+ *   holds the previous value through those instants.
+ *
  * Cumulative distance is over the passed array, so the caller groups by
  * spatially-contiguous segment when segments may be disjoint (e.g. gopro calls it
  * per source segment).
  *
  * @param {{lat:number, lon:number, ele:number, t:number}[]} points sorted by t
- * @param {{windowM?:number, minSpan?:number}} [opts]
+ * @param {{windowM?:number, minSpan?:number, direct?:boolean}} [opts]
  * @returns {{t:number, value:number}[]}
  */
-export function gradientSamples(points, { windowM = 20, minSpan = 3 } = {}) {
+export function gradientSamples(points, { windowM = 20, minSpan = 3, direct = false } = {}) {
+  if (direct) return gradientSamplesDirect(points, { windowM, minSpan })
   const out = []
   const cum = [0]
   for (let i = 1; i < points.length; i++) cum[i] = cum[i - 1] + haversineM(points[i - 1], points[i])
@@ -51,6 +64,36 @@ export function gradientSamples(points, { windowM = 20, minSpan = 3 } = {}) {
     const span = cum[i] - cum[lo]
     let g = prev
     if (span >= minSpan && finite(points[lo].ele)) g = ((points[i].ele - points[lo].ele) / span) * 100
+    out.push({ t: points[i].t, value: g })
+    prev = g
+  }
+  return out
+}
+
+// The `direct: true` variant (see gradientSamples' doc): baseline = the most-recent
+// earlier point whose STRAIGHT-LINE distance is ≥ windowM (falling back to the oldest
+// point when none is that far, mirroring the path variant's short-window start), and
+// the slope divides by that same chord. Chord distance isn't monotone in the index
+// (a turn can bring the track back toward an old point), so this scans backward per
+// point instead of keeping a sliding `lo`; the scan stops at the first hit, which on
+// real moving data is a handful of samples.
+function gradientSamplesDirect(points, { windowM, minSpan }) {
+  const out = []
+  let prev = 0
+  for (let i = 0; i < points.length; i++) {
+    if (!finite(points[i].ele)) continue
+    let base = 0 // fallback: oldest point (short-window start / everything still nearby)
+    for (let j = i - 1; j >= 0; j--) {
+      if (haversineM(points[j], points[i]) >= windowM) {
+        base = j
+        break
+      }
+    }
+    let g = prev
+    if (base < i && finite(points[base].ele)) {
+      const span = haversineM(points[base], points[i])
+      if (span >= minSpan) g = ((points[i].ele - points[base].ele) / span) * 100
+    }
     out.push({ t: points[i].t, value: g })
     prev = g
   }
