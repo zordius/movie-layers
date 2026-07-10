@@ -27,8 +27,11 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n)
  * timeline. Gradient = Δaltitude / horizontal-distance over a ~`windowM`-metre
  * baseline (NOT adjacent samples) to tame GPS vertical noise: the baseline is the
  * most-recent earlier point ≥ `windowM` behind — dense samples smooth over ~windowM
- * m, sparse samples (already > windowM apart) use the previous one. Below `minSpan`
- * metres the slope is GPS jitter, so the previous value is held.
+ * m, sparse samples (already > windowM apart) use the previous one. The measuring
+ * span (either direction) must be a FULL window — `max(minSpan, windowM)` — or the
+ * previous value is held: over a shorter denominator the slope is dominated by GPS
+ * jitter (a queue/standstill wobbles metres of `ele` over metres of travel, reading
+ * as ±100%+ garbage).
  *
  * Elevation holes are HARD breaks, not bridges. Points with a non-finite `ele`
  * are unusable, and where the usable points around them end up > `gapSec` apart
@@ -44,9 +47,10 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n)
  * bridged either way.
  *
  * At a restart (run head, nothing usable behind yet) the slope is measured
- * FORWARD — against the point ≥ `windowM` ahead in the same run (or the run's
- * end) — instead of holding a stale/zero value; a run too short to measure
- * (< `minSpan`) emits nothing.
+ * FORWARD — against the point ≥ `windowM` ahead in the same run — instead of
+ * holding a stale/zero value. A run that never travels `windowM` (a standstill
+ * blob) is unmeasurable and emits NOTHING: the gauge stays frozen there, which
+ * is the honest reading — slope is undefined while not moving.
  *
  * Two distance metrics, `opts.direct` picks one — BOTH the baseline selection and the
  * slope's denominator use the same metric:
@@ -57,8 +61,8 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n)
  *   The terrain's own pitch — a carving/traversing descent reads as the SLOPE's
  *   steepness instead of being diluted by the extra path length of every turn (a
  *   skier's definition; provider-gopro turns this on in ski mode). The hairpin
- *   degeneracy (chord → 0 while path grows) is inherent to the metric; `minSpan`
- *   holds the previous value through those instants.
+ *   degeneracy (chord → 0 while path grows) is inherent to the metric; the
+ *   full-window floor holds the previous value through those instants.
  *
  * Cumulative distance is over the passed array, so the caller groups by
  * spatially-contiguous segment when segments may be disjoint (e.g. gopro calls it
@@ -94,6 +98,7 @@ function eleRuns(points, gapSec) {
 
 // Path-distance variant over ONE run of finite-`ele` points (see gradientSamples' doc).
 function gradientRunPath(points, windowM, minSpan, out) {
+  const floor = Math.max(minSpan, windowM) // a slope needs a full-window denominator
   const cum = [0]
   for (let i = 1; i < points.length; i++) cum[i] = cum[i - 1] + haversineM(points[i - 1], points[i])
   let lo = 0
@@ -101,15 +106,15 @@ function gradientRunPath(points, windowM, minSpan, out) {
   for (let i = 0; i < points.length; i++) {
     while (lo + 1 < i && cum[i] - cum[lo + 1] >= windowM) lo++ // most-recent point ≥ windowM behind
     let g
-    if (cum[i] - cum[lo] >= minSpan) {
+    if (cum[i] - cum[lo] >= floor) {
       g = ((points[i].ele - points[lo].ele) / (cum[i] - cum[lo])) * 100
     } else if (prev != null) {
-      g = prev // mid-run short span (jitter guard): hold
+      g = prev // not a full window behind yet: hold
     } else {
-      // run head — measure forward, against the point ≥ windowM ahead (or the run end)
+      // run head — measure forward, against the point ≥ windowM ahead
       let hi = i
-      while (hi + 1 < points.length && cum[hi] - cum[i] < windowM) hi++
-      if (cum[hi] - cum[i] < minSpan) continue // run too short to measure anything yet
+      while (hi + 1 < points.length && cum[hi] - cum[i] < floor) hi++
+      if (cum[hi] - cum[i] < floor) continue // whole run < windowM (standstill): unmeasurable
       g = ((points[hi].ele - points[i].ele) / (cum[hi] - cum[i])) * 100
     }
     out.push({ t: points[i].t, value: g })
@@ -119,37 +124,37 @@ function gradientRunPath(points, windowM, minSpan, out) {
 
 // The `direct: true` variant (see gradientSamples' doc), over ONE run of finite-`ele`
 // points: baseline = the most-recent earlier point whose STRAIGHT-LINE distance is
-// ≥ windowM (falling back to the oldest point when none is that far, mirroring the
-// path variant's short-window start), and the slope divides by that same chord.
-// Chord distance isn't monotone in the index (a turn can bring the track back toward
-// an old point), so this scans backward per point instead of keeping a sliding `lo`;
-// the scan stops at the first hit, which on real moving data is a handful of samples.
+// ≥ the full window, and the slope divides by that same chord. Chord distance isn't
+// monotone in the index (a turn can bring the track back toward an old point), so
+// this scans backward per point instead of keeping a sliding `lo`; the scan stops at
+// the first hit, which on real moving data is a handful of samples.
 function gradientRunDirect(points, windowM, minSpan, out) {
+  const floor = Math.max(minSpan, windowM) // a slope needs a full-window denominator
   let prev = null
   for (let i = 0; i < points.length; i++) {
-    let base = 0 // fallback: oldest point (short-window start / everything still nearby)
+    let base = -1
     for (let j = i - 1; j >= 0; j--) {
-      if (haversineM(points[j], points[i]) >= windowM) {
+      if (haversineM(points[j], points[i]) >= floor) {
         base = j
         break
       }
     }
-    const span = base < i ? haversineM(points[base], points[i]) : 0
     let g
-    if (span >= minSpan) {
-      g = ((points[i].ele - points[base].ele) / span) * 100
+    if (base >= 0) {
+      g = ((points[i].ele - points[base].ele) / haversineM(points[base], points[i])) * 100
     } else if (prev != null) {
-      g = prev // mid-run short chord (hairpin / standstill): hold
+      g = prev // no full-window chord behind (hairpin / standstill): hold
     } else {
-      // run head — measure forward, against the point ≥ windowM ahead (or the run end)
-      let fwd = i
+      // run head — measure forward, against the point ≥ windowM ahead
+      let fwd = -1
       for (let j = i + 1; j < points.length; j++) {
-        fwd = j
-        if (haversineM(points[i], points[j]) >= windowM) break
+        if (haversineM(points[i], points[j]) >= floor) {
+          fwd = j
+          break
+        }
       }
-      const fspan = fwd > i ? haversineM(points[i], points[fwd]) : 0
-      if (fspan < minSpan) continue // run too short to measure anything yet
-      g = ((points[fwd].ele - points[i].ele) / fspan) * 100
+      if (fwd < 0) continue // whole run < windowM (standstill): unmeasurable
+      g = ((points[fwd].ele - points[i].ele) / haversineM(points[i], points[fwd])) * 100
     }
     out.push({ t: points[i].t, value: g })
     prev = g
