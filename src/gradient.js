@@ -28,8 +28,25 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n)
  * baseline (NOT adjacent samples) to tame GPS vertical noise: the baseline is the
  * most-recent earlier point ≥ `windowM` behind — dense samples smooth over ~windowM
  * m, sparse samples (already > windowM apart) use the previous one. Below `minSpan`
- * metres the slope is GPS jitter, so the previous value is held. Points with a
- * non-finite `ele` are skipped in the output but still count toward distance.
+ * metres the slope is GPS jitter, so the previous value is held.
+ *
+ * Elevation holes are HARD breaks, not bridges. Points with a non-finite `ele`
+ * are unusable, and where the usable points around them end up > `gapSec` apart
+ * in time (the stabilizer's ski mode drops `ele` across lift boarding / a run's
+ * highest+lowest points, where the signal is worst) the slope RESTARTS: nothing
+ * before the hole — no baseline, no cumulative distance, no held value — leaks
+ * into the slope after it. Otherwise the first post-hole slopes are measured
+ * against pre-hole points (i.e. across the entire skipped climb) and the gauge
+ * lingers near its pre-freeze reading long after the signal returns. `gapSec`
+ * should therefore match the channel's `maxGap` (the widget-freeze threshold),
+ * so the slope restarts exactly where the gauge un-freezes; the default
+ * (Infinity) never time-splits, and brief single-sample `ele` blips stay
+ * bridged either way.
+ *
+ * At a restart (run head, nothing usable behind yet) the slope is measured
+ * FORWARD — against the point ≥ `windowM` ahead in the same run (or the run's
+ * end) — instead of holding a stale/zero value; a run too short to measure
+ * (< `minSpan`) emits nothing.
  *
  * Two distance metrics, `opts.direct` picks one — BOTH the baseline selection and the
  * slope's denominator use the same metric:
@@ -48,40 +65,68 @@ const finite = (n) => typeof n === 'number' && Number.isFinite(n)
  * per source segment).
  *
  * @param {{lat:number, lon:number, ele:number, t:number}[]} points sorted by t
- * @param {{windowM?:number, minSpan?:number, direct?:boolean}} [opts]
+ * @param {{windowM?:number, minSpan?:number, direct?:boolean, gapSec?:number}} [opts]
  * @returns {{t:number, value:number}[]}
  */
-export function gradientSamples(points, { windowM = 20, minSpan = 3, direct = false } = {}) {
-  if (direct) return gradientSamplesDirect(points, { windowM, minSpan })
+export function gradientSamples(points, { windowM = 20, minSpan = 3, direct = false, gapSec = Infinity } = {}) {
   const out = []
-  const cum = [0]
-  for (let i = 1; i < points.length; i++) cum[i] = cum[i - 1] + haversineM(points[i - 1], points[i])
-  let lo = 0
-  let prev = 0
-  for (let i = 0; i < points.length; i++) {
-    if (!finite(points[i].ele)) continue
-    while (lo + 1 < i && cum[i] - cum[lo + 1] >= windowM) lo++ // most-recent point ≥ windowM behind
-    const span = cum[i] - cum[lo]
-    let g = prev
-    if (span >= minSpan && finite(points[lo].ele)) g = ((points[i].ele - points[lo].ele) / span) * 100
-    out.push({ t: points[i].t, value: g })
-    prev = g
+  for (const run of eleRuns(points, gapSec)) {
+    if (direct) gradientRunDirect(run, windowM, minSpan, out)
+    else gradientRunPath(run, windowM, minSpan, out)
   }
   return out
 }
 
-// The `direct: true` variant (see gradientSamples' doc): baseline = the most-recent
-// earlier point whose STRAIGHT-LINE distance is ≥ windowM (falling back to the oldest
-// point when none is that far, mirroring the path variant's short-window start), and
-// the slope divides by that same chord. Chord distance isn't monotone in the index
-// (a turn can bring the track back toward an old point), so this scans backward per
-// point instead of keeping a sliding `lo`; the scan stops at the first hit, which on
-// real moving data is a handful of samples.
-function gradientSamplesDirect(points, { windowM, minSpan }) {
-  const out = []
-  let prev = 0
+// Usable (finite-`ele`) points, split into runs wherever consecutive usable points
+// sit > gapSec apart in time — i.e. across an elevation hole wide enough that the
+// gradient channel would read invalid there anyway (see gradientSamples' doc).
+function eleRuns(points, gapSec) {
+  const runs = []
+  let cur = null
+  for (const p of points) {
+    if (!finite(p.ele)) continue
+    if (cur && p.t - cur[cur.length - 1].t > gapSec) cur = null
+    if (!cur) runs.push((cur = []))
+    cur.push(p)
+  }
+  return runs
+}
+
+// Path-distance variant over ONE run of finite-`ele` points (see gradientSamples' doc).
+function gradientRunPath(points, windowM, minSpan, out) {
+  const cum = [0]
+  for (let i = 1; i < points.length; i++) cum[i] = cum[i - 1] + haversineM(points[i - 1], points[i])
+  let lo = 0
+  let prev = null
   for (let i = 0; i < points.length; i++) {
-    if (!finite(points[i].ele)) continue
+    while (lo + 1 < i && cum[i] - cum[lo + 1] >= windowM) lo++ // most-recent point ≥ windowM behind
+    let g
+    if (cum[i] - cum[lo] >= minSpan) {
+      g = ((points[i].ele - points[lo].ele) / (cum[i] - cum[lo])) * 100
+    } else if (prev != null) {
+      g = prev // mid-run short span (jitter guard): hold
+    } else {
+      // run head — measure forward, against the point ≥ windowM ahead (or the run end)
+      let hi = i
+      while (hi + 1 < points.length && cum[hi] - cum[i] < windowM) hi++
+      if (cum[hi] - cum[i] < minSpan) continue // run too short to measure anything yet
+      g = ((points[hi].ele - points[i].ele) / (cum[hi] - cum[i])) * 100
+    }
+    out.push({ t: points[i].t, value: g })
+    prev = g
+  }
+}
+
+// The `direct: true` variant (see gradientSamples' doc), over ONE run of finite-`ele`
+// points: baseline = the most-recent earlier point whose STRAIGHT-LINE distance is
+// ≥ windowM (falling back to the oldest point when none is that far, mirroring the
+// path variant's short-window start), and the slope divides by that same chord.
+// Chord distance isn't monotone in the index (a turn can bring the track back toward
+// an old point), so this scans backward per point instead of keeping a sliding `lo`;
+// the scan stops at the first hit, which on real moving data is a handful of samples.
+function gradientRunDirect(points, windowM, minSpan, out) {
+  let prev = null
+  for (let i = 0; i < points.length; i++) {
     let base = 0 // fallback: oldest point (short-window start / everything still nearby)
     for (let j = i - 1; j >= 0; j--) {
       if (haversineM(points[j], points[i]) >= windowM) {
@@ -89,15 +134,26 @@ function gradientSamplesDirect(points, { windowM, minSpan }) {
         break
       }
     }
-    let g = prev
-    if (base < i && finite(points[base].ele)) {
-      const span = haversineM(points[base], points[i])
-      if (span >= minSpan) g = ((points[i].ele - points[base].ele) / span) * 100
+    const span = base < i ? haversineM(points[base], points[i]) : 0
+    let g
+    if (span >= minSpan) {
+      g = ((points[i].ele - points[base].ele) / span) * 100
+    } else if (prev != null) {
+      g = prev // mid-run short chord (hairpin / standstill): hold
+    } else {
+      // run head — measure forward, against the point ≥ windowM ahead (or the run end)
+      let fwd = i
+      for (let j = i + 1; j < points.length; j++) {
+        fwd = j
+        if (haversineM(points[i], points[j]) >= windowM) break
+      }
+      const fspan = fwd > i ? haversineM(points[i], points[fwd]) : 0
+      if (fspan < minSpan) continue // run too short to measure anything yet
+      g = ((points[fwd].ele - points[i].ele) / fspan) * 100
     }
     out.push({ t: points[i].t, value: g })
     prev = g
   }
-  return out
 }
 
 /**

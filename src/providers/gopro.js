@@ -61,7 +61,7 @@ function goodFixes(points) {
  * (gray pre-display before GPS lock); with the first-fix fallback it lands at the
  * segment start (pre-lock delay unknown, left out).
  */
-function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, speedWindowSec, ski) {
+function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, speedWindowSec, ski, maxGap) {
   const ts = good.map((p) => offset + (p.time - anchorUtc) / 1000)
   for (let i = 0; i < good.length; i++) {
     const p = good[i]
@@ -72,11 +72,15 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
 
   // Gradient (and a derived-speed fallback) via the shared helpers. Cumulative
   // distance is per-segment (segments may be spatially disjoint), so call them
-  // here — per segment — not across the whole track. The gradient helper skips
-  // non-finite `ele` in the output but still counts it toward distance. Ski mode
-  // switches the gradient's distance metric to straight-line/chord (see gradient.js).
+  // here — per segment — not across the whole track. `gapSec: maxGap` makes an
+  // elevation hole wide enough to freeze the gauge also RESTART the slope, so the
+  // post-hole gradient is never measured against pre-hole points (ski mode drops
+  // `ele` around lift boarding / run extremes — see gradient.js). Ski mode also
+  // switches the gradient's distance metric to straight-line/chord (gradient.js).
   const pts = good.map((p, i) => ({ lat: p.lat, lon: p.lon, ele: p.ele, t: ts[i] }))
-  for (const s of gradientSamples(pts, { windowM: W, minSpan, direct: ski })) channels.gradient.samples.push(s)
+  for (const s of gradientSamples(pts, { windowM: W, minSpan, direct: ski, gapSec: maxGap })) {
+    channels.gradient.samples.push(s)
+  }
   // derived speed is held aside; only used if the device reported none anywhere (below)
   for (const s of speedSamples(pts, { windowSec: speedWindowSec })) dspeed.push(s)
 }
@@ -195,7 +199,7 @@ export default function gopro(opts = {}) {
         // available, else this segment's own first fix (good[0]).
         const verified = res.clock?.verified === true
         const anchor = verified && finite(res.startUtc) ? res.startUtc : good[0].time
-        appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec, skiGrade)
+        appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec, skiGrade, maxGap)
         clocks.push({ sourceIndex: target.sourceIndex, startUtc: anchor, confidence: 'gps', verified })
       }
 

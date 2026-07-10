@@ -164,8 +164,10 @@ export default function gpx(opts = {}) {
       // Gradient from the placed points (shared helper). A single sidecar track is
       // spatially contiguous, so compute over the whole placed run — per-segment
       // reset (for a track split across disjoint video segments) is a refinement;
-      // for the common N=1 case it is identical.
-      for (const s of gradientSamples(placedPts, { windowM: opts.gradeWindowM ?? 15 })) {
+      // for the common N=1 case it is identical. `gapSec: maxGap` restarts the
+      // slope across an elevation hole wide enough to freeze the gauge, so the
+      // post-hole gradient never measures against pre-hole points (gradient.js).
+      for (const s of gradientSamples(placedPts, { windowM: opts.gradeWindowM ?? 15, gapSec: maxGap })) {
         channels.gradient.samples.push(s)
       }
 
