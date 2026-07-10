@@ -146,8 +146,9 @@ Done:
       default for a stable gradient), no-GPS pass-through (stitch only), aspect-aware
       layout + `--flip`, `--snapshot` PNG preview, staged logging + ETA, `--open`,
       `--quiet`, `--gpx` (single file, comma-separated files, or a directory — all
-      merge into one track) / `--clock-offset` / `--no-stabilize` / `--mode NAME`
-      (gpx-stabilizer analysis preset, e.g. `ski`) flags. Widgets that need GPS or
+      merge into one track, cleaned + elevation-smoothed by default like embedded
+      GPS) / `--clock-offset` / `--no-stabilize` / `--mode NAME` (gpx-stabilizer
+      analysis preset, e.g. `ski` — embedded GPS and `--gpx` alike) flags. Widgets that need GPS or
       elevation are dropped gracefully (not a crash) when the whole clip has none —
       never based on just a `--range` window
 - [x] Dashboard presentation: per-gauge display smoothing (default-on,
@@ -157,8 +158,9 @@ Done:
       (`--map`, off by default), projected with the track's own fit so it stays to
       scale; tiles fetched once and disk-cached (`--map-cache`, default
       `~/.cache/movie-layers/tiles`; `--map-zoom` overrides the auto fit); resolves
-      and labels the ski resort name (JA/EN, toggling every 10s) the track passes
-      through, via an Overpass API lookup, disk-cached per area. The track's small
+      and labels a place name (JA/EN, toggling every 10s) via an Overpass API
+      lookup, disk-cached — the containing city/municipality by default, or the
+      ski resort the track enters with `--mode ski`. The track's small
       follow-circle inset keeps its own view (no basemap)
 - [x] Encode + render speed: detection-based hardware **encode** auto-upgrade
       (videotoolbox / nvenc / qsv / amf; bitrate follows YouTube's recommended

@@ -30,9 +30,11 @@
  * that happens to be split across files" without any extra bookkeeping.
  *
  * Parsing is delegated to `gpx-stabilizer`'s render-agnostic `readGpx` (zero-dep),
- * keeping movie-layers core format-agnostic (spec §0). Channels produced: `gps`
- * ({lat,lon}); `speed` / `altitude` when the track carries them; and `gradient`
- * derived from lat/lon/ele via the shared helper (same as provider-gopro).
+ * keeping movie-layers core format-agnostic (spec §0), and the parsed points run
+ * through its `stabilize()` by default (same clean + slope-stable-`ele` policy and
+ * `mode` presets as provider-gopro; `stabilize: false` = raw). Channels produced:
+ * `gps` ({lat,lon}); `speed` / `altitude` when the track carries them; and
+ * `gradient` derived from lat/lon/ele via the shared helper (same as provider-gopro).
  *
  * NOTE (clock ordering, spec §5): this provider is marked `needsClock: true`, so
  * the engine loads it in the SECOND data round — after every clock-producing
@@ -45,7 +47,7 @@
  * `clockOffsetSec` — a sidecar has no `cts` link to the frames, so it can never
  * anchor the video by itself (spec §5 "wrong camera clock").
  */
-import { readGpx } from 'gpx-stabilizer'
+import { readGpx, stabilize } from 'gpx-stabilizer'
 
 import { gradientSamples, speedSamples } from '../gradient.js'
 
@@ -76,10 +78,22 @@ function goodPoints(points) {
  * @param {string[]} [opts.files]  multiple sidecars, merged (else `config.gpxFiles`);
  *   takes precedence over `opts.file` if both are given
  * @param {string} [opts.name]   provider name for channel-merge precedence (default 'gpx')
+ * @param {boolean} [opts.smooth=true]  elevation smoothing → a slope-stable `gradient`
+ *   (same knob as provider-gopro: implies cleaning; `stabilize: false` disables it;
+ *   only consulted when no `opts.mode` is set — a mode preset governs its own
+ *   elevation handling)
+ * @param {boolean|object} [opts.stabilize]  gpx-stabilizer noise removal over the
+ *   parsed points; `false` forces raw (disables smoothing too). NOTE: cleaning drops
+ *   each point's `speed`/`fix` → the GPS-derived speed fallback fills speed in.
+ * @param {string} [opts.mode]  gpx-stabilizer analysis mode (e.g. "ski" — lift/cable-car
+ *   detection + aggressive elevation despike), passed straight to `stabilize()`;
+ *   also switches the gradient to ski behaviour (chord distance metric + a wider
+ *   `gradeWindowM` default), mirroring provider-gopro. Ignored when `stabilize === false`.
  * @param {number} [opts.maxGap=3]  seconds; a larger inter-sample gap reads as
  *   "signal lost" (channel goes invalid → widgets dim)
- * @param {number} [opts.gradeWindowM=15]  distance window (m) the gradient slope is
- *   measured over — wider = smoother, since GPS altitude is noisy per-sample
+ * @param {number} [opts.gradeWindowM]  distance window (m) the gradient slope is
+ *   measured over — wider = smoother, since GPS altitude is noisy per-sample.
+ *   Default 15; ski mode defaults to 50 (same rationale as provider-gopro)
  * @returns {{name, data}} a movie-layers data provider
  */
 export default function gpx(opts = {}) {
@@ -115,9 +129,25 @@ export default function gpx(opts = {}) {
         )
       }
 
+      // Cleaning/smoothing over the parsed points (same policy as provider-gopro):
+      // default = clean + slope-stable `ele` (gradeBound + 30 m smoothing window);
+      // an `opts.mode` preset (e.g. ski) governs its own elevation handling;
+      // `stabilize: false` keeps raw points. Cleaning drops `speed`/`fix` from the
+      // survivors — the derived-speed fallback below fills speed back in.
+      const smooth = opts.smooth ?? true
+      const stab =
+        opts.stabilize === false
+          ? false
+          : {
+              ...(typeof opts.stabilize === 'object' ? opts.stabilize : {}),
+              ...(opts.mode ? { mode: opts.mode } : smooth ? { gradeBound: { GRADE_SMOOTH_WIN_M: 30 } } : {}),
+            }
+
       // merge every sidecar's points into one pool — each point's own UTC (below)
       // decides which segment it belongs to, so multiple files resolve exactly
-      // like a single one.
+      // like a single one. Stabilize runs per FILE (before the merge): each file is
+      // its own continuous recording, and the cleaner's motion analysis must not
+      // see an artificial jump between two unrelated files.
       const good = []
       for (const path of paths) {
         let trkSegs
@@ -126,10 +156,11 @@ export default function gpx(opts = {}) {
         } catch (e) {
           throw new Error(`provider-gpx: failed to read ${path} — ${e.message}`)
         }
+        const pts = goodPoints(trkSegs.flat())
         // plain loop, not `good.push(...points)` — a real-world GPX can carry tens of
         // thousands of points, and spreading that many into one call blows V8's argument
         // limit ("Maximum call stack size exceeded")
-        for (const p of goodPoints(trkSegs.flat())) good.push(p)
+        for (const p of stab ? stabilize(pts, stab) : pts) good.push(p)
       }
       // channel samples and the gradient/speed helpers below assume ascending time;
       // multiple files aren't guaranteed to be given in chronological order (e.g. one
@@ -181,7 +212,11 @@ export default function gpx(opts = {}) {
       // for the common N=1 case it is identical. `gapSec: maxGap` restarts the
       // slope across an elevation hole wide enough to freeze the gauge, so the
       // post-hole gradient never measures against pre-hole points (gradient.js).
-      for (const s of gradientSamples(placedPts, { windowM: opts.gradeWindowM ?? 15, gapSec: maxGap })) {
+      // ski mode mirrors provider-gopro: wider slope window (run pitch, not per-turn
+      // micro-relief) + straight-line/chord distance metric (gradient.js doc)
+      const ski = opts.mode === 'ski' && stab !== false
+      const windowM = opts.gradeWindowM ?? (ski ? 50 : 15)
+      for (const s of gradientSamples(placedPts, { windowM, direct: ski, gapSec: maxGap })) {
         channels.gradient.samples.push(s)
       }
 

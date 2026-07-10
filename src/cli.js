@@ -75,11 +75,14 @@ options:
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
   --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
   --mode NAME           gpx-stabilizer analysis mode (default: core; "ski" adds
-                        lift/cable-car detection + a more aggressive elevation despike).
-                        Embedded GoPro GPS only; ignored with --no-stabilize or --gpx.
+                        lift/cable-car detection + a more aggressive elevation despike,
+                        and switches the --map label to the ski resort name). Applies to
+                        embedded GoPro GPS and --gpx alike; ignored with --no-stabilize.
   --no-datetime         omit the date/time readout
   --no-smooth           disable gauge-value display smoothing (on by default)
-  --map                 draw an OpenStreetMap basemap under the big track map (off by default)
+  --map                 draw an OpenStreetMap basemap under the big track map (off by
+                        default), labeled with the city name (or, with --mode ski, the
+                        resort name the track enters)
   --map-zoom N          force the basemap tile zoom (default: auto-fit to the track)
   --map-cache DIR       tile cache directory (default: ~/.cache/movie-layers/tiles)
   --flip                swap the bottom corners — gauges right, track map left
@@ -616,13 +619,19 @@ async function main() {
       console.error(`error: no .gpx files found in: ${args.gpx}`)
       process.exit(1)
     }
-    dataProvider = gpx({ files: gpxFiles })
+    const raw = !!args.noStabilize
+    dataProvider = gpx({
+      files: gpxFiles,
+      ...(raw ? { stabilize: false } : {}),
+      ...(args.mode && !raw ? { mode: args.mode } : {}),
+    })
+    const flavor = raw ? 'raw' : `smoothed${args.mode ? `, mode ${args.mode}` : ''}`
     log(
       gpxFiles.length > 1
-        ? `  source: sidecar gpx (${gpxFiles.length} files): ${gpxFiles.join(', ')}`
-        : `  source: sidecar gpx ${gpxFiles[0]}`,
+        ? `  source: sidecar gpx (${gpxFiles.length} files, ${flavor}): ${gpxFiles.join(', ')}`
+        : `  source: sidecar gpx ${gpxFiles[0]} (${flavor})`,
     )
-    if (args.mode) log(`  note: --mode ${args.mode} ignored — only embedded GoPro GPS supports it`)
+    if (raw && args.mode) log(`  note: --mode ${args.mode} ignored — --no-stabilize disables analysis entirely`)
     if (hasGps) {
       // The sidecar aligns by wall clock, but a container `creation_time` is the
       // camera clock — often LOCAL time stamped as UTC. The clip's own GPS carries
@@ -647,6 +656,9 @@ async function main() {
   const mapCfg = args.map
     ? {
         onLog: log,
+        // the map's place label follows --mode: ski → the resort the track enters,
+        // anything else → the containing city/municipality
+        nameMode: args.mode === 'ski' ? 'ski' : 'city',
         ...(args['map-cache'] ? { cacheDir: args['map-cache'] } : {}),
         ...(args['map-zoom'] ? { zoom: numFlag('map-zoom', args['map-zoom']) } : {}),
       }

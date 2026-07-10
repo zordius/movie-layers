@@ -125,6 +125,78 @@ async function fetchResortPolys({ north, south, east, west, cacheDir, userAgent,
   return polys
 }
 
+/**
+ * City/municipality name(s) (JA + EN) containing the given sample points, via one
+ * Overpass `is_in` query (server-side point-in-area containment, tags only — no
+ * geometry download, unlike the resort path which needs rings for its own
+ * point-in-polygon). Among the administrative areas returned, the MOST specific
+ * admin_level wins (queried 6–8; verified live: JP municipality = 7 with county = 6
+ * above it, most other countries' city = 8). Cached to disk per rounded sample
+ * points; failures return null and are not cached (same policy as resorts).
+ */
+async function fetchCityNames({ points, cacheDir, userAgent, onLog }) {
+  if (!points.length) return null
+  const key = `city_${points.map((p) => `${p.lat.toFixed(3)}_${p.lon.toFixed(3)}`).join('_')}`
+  const file = join(cacheDir, `${key}.json`)
+  if (existsSync(file)) {
+    try {
+      return JSON.parse(await readFile(file, 'utf8'))
+    } catch {
+      /* corrupt cache entry — refetch below */
+    }
+  }
+  const isIns = points.map((p, i) => `is_in(${p.lat.toFixed(6)},${p.lon.toFixed(6)})->.p${i};`).join('')
+  const union = `(${points.map((_, i) => `area.p${i};`).join('')})->.all;`
+  const query = `[out:json][timeout:25];${isIns}${union}area.all["boundary"="administrative"]["admin_level"~"^[678]$"];out tags;`
+
+  async function attempt() {
+    const res = await fetch(OVERPASS_URL, {
+      method: 'POST',
+      headers: { 'User-Agent': userAgent, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `data=${encodeURIComponent(query)}`,
+    })
+    const text = await res.text()
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    let data
+    try {
+      data = JSON.parse(text)
+    } catch {
+      throw new Error('non-JSON response (Overpass likely overloaded)')
+    }
+    if (!Array.isArray(data.elements)) throw new Error('unexpected response shape (no elements[])')
+    return data
+  }
+
+  let data = null
+  try {
+    data = await attempt()
+  } catch (firstError) {
+    await new Promise((r) => setTimeout(r, 3000))
+    try {
+      data = await attempt()
+    } catch (secondError) {
+      onLog?.(`map: city lookup failed (${secondError.message}, retried once after "${firstError.message}") — no label`)
+    }
+  }
+  if (!data) return null // both attempts failed — don't cache, retry fresh next render
+  const els = data.elements.filter((e) => e.tags?.name && Number.isFinite(Number(e.tags.admin_level)))
+  let out = null
+  if (els.length) {
+    const top = Math.max(...els.map((e) => Number(e.tags.admin_level)))
+    const hits = els.filter((e) => Number(e.tags.admin_level) === top)
+    const ja = [...new Set(hits.map((e) => e.tags.name))].join(' / ')
+    const en = [...new Set(hits.map((e) => e.tags['name:en'] ?? e.tags['name:ja-Latn'] ?? e.tags.name))].join(' / ')
+    out = { ja, en }
+  }
+  try {
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(file, JSON.stringify(out))
+  } catch {
+    /* best-effort cache write */
+  }
+  return out
+}
+
 /** Tile bytes from the disk cache, else fetched and cached. */
 async function getTile({ z, x, y, cacheDir, tileUrl, userAgent }) {
   const dir = join(cacheDir, String(z), String(x))
@@ -181,6 +253,10 @@ class MapLayer extends Layer {
     this.concurrency = c.concurrency ?? 4
     this.onLog = typeof c.onLog === 'function' ? c.onLog : null
     this.resortCacheDir = c.resortCacheDir ?? defaultResortCacheDir()
+    // which place name labels the map: 'ski' = winter_sports resort boundary the
+    // track enters (the original behaviour, kept as the default); 'city' = the
+    // administrative city/municipality containing the track (Overpass is_in)
+    this.nameMode = c.nameMode === 'city' ? 'city' : 'ski'
     this._img = null // offscreen pre-rendered basemap (physical resolution)
     this._labelKey = `${this.x}_${this.y}_${this.w}_${this.h}` // shared with the sibling map-label layer
   }
@@ -223,16 +299,28 @@ class MapLayer extends Layer {
     octx.rect(this.x, this.y, this.w, this.h)
     octx.clip()
 
-    // resort-name lookup runs alongside the tile fetch (independent network calls)
-    const resortPromise = fetchResortPolys({
-      north,
-      south,
-      east,
-      west,
-      cacheDir: this.resortCacheDir,
-      userAgent: this.userAgent,
-      onLog: this.onLog,
-    })
+    // place-name lookup runs alongside the tile fetch (independent network calls):
+    // ski → resort polygons (point-in-ring against the track below); city → is_in
+    // containment on a few track sample points (server-side, tags only)
+    const labelPromise =
+      this.nameMode === 'city'
+        ? fetchCityNames({
+            points: [0.25, 0.5, 0.75]
+              .map((f) => series[Math.min(series.length - 1, Math.floor(series.length * f))].value)
+              .filter((v) => v && v.lat != null),
+            cacheDir: this.resortCacheDir,
+            userAgent: this.userAgent,
+            onLog: this.onLog,
+          })
+        : fetchResortPolys({
+            north,
+            south,
+            east,
+            west,
+            cacheDir: this.resortCacheDir,
+            userAgent: this.userAgent,
+            onLog: this.onLog,
+          })
 
     const bufs = await pool(tiles, this.concurrency, (t) =>
       getTile({ z, x: t.xt, y: t.yt, cacheDir: this.cacheDir, tileUrl: this.tileUrl, userAgent: this.userAgent }),
@@ -256,30 +344,38 @@ class MapLayer extends Layer {
       ok++
     }
 
-    // which resort(s) the track actually enters — point-in-polygon against a capped
-    // sample of the GPS series, not just "near the box" (a resort's boundary can sit
-    // inside the visible extent without the track ever crossing into it)
-    const resortPolys = await resortPromise
-    if (resortPolys.length) {
-      const hitJa = new Set()
-      const hitEn = new Set()
-      const step = Math.max(1, Math.floor(series.length / 500))
-      for (let i = 0; i < series.length; i += step) {
-        const v = series[i].value
-        if (!v || v.lat == null) continue
-        for (const p of resortPolys) {
-          if (hitJa.has(p.ja)) continue
-          if (pointInRing(v.lat, v.lon, p.ring)) {
-            hitJa.add(p.ja)
-            hitEn.add(p.en)
+    if (this.nameMode === 'city') {
+      const hit = await labelPromise
+      if (hit?.ja) {
+        resortLabelCache.set(this._labelKey, hit)
+        this.onLog?.(`map: city → ${hit.ja}`)
+      }
+    } else {
+      // which resort(s) the track actually enters — point-in-polygon against a capped
+      // sample of the GPS series, not just "near the box" (a resort's boundary can sit
+      // inside the visible extent without the track ever crossing into it)
+      const resortPolys = await labelPromise
+      if (resortPolys.length) {
+        const hitJa = new Set()
+        const hitEn = new Set()
+        const step = Math.max(1, Math.floor(series.length / 500))
+        for (let i = 0; i < series.length; i += step) {
+          const v = series[i].value
+          if (!v || v.lat == null) continue
+          for (const p of resortPolys) {
+            if (hitJa.has(p.ja)) continue
+            if (pointInRing(v.lat, v.lon, p.ring)) {
+              hitJa.add(p.ja)
+              hitEn.add(p.en)
+            }
           }
         }
-      }
-      if (hitJa.size) {
-        const ja = [...hitJa].join(' / ')
-        const en = [...hitEn].join(' / ')
-        resortLabelCache.set(this._labelKey, { ja, en })
-        this.onLog?.(`map: resort → ${ja}`)
+        if (hitJa.size) {
+          const ja = [...hitJa].join(' / ')
+          const en = [...hitEn].join(' / ')
+          resortLabelCache.set(this._labelKey, { ja, en })
+          this.onLog?.(`map: resort → ${ja}`)
+        }
       }
     }
 
