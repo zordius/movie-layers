@@ -161,7 +161,9 @@ Done:
       through, via an Overpass API lookup, disk-cached per area. The track's small
       follow-circle inset keeps its own view (no basemap)
 - [x] Encode + render speed: detection-based hardware **encode** auto-upgrade
-      (videotoolbox / nvenc / qsv / amf) and **decode** hwaccel auto-detect
+      (videotoolbox / nvenc / qsv / amf; bitrate follows YouTube's recommended
+      upload rate for the source resolution × fps — 1080p60 → 12M, 1440p60 → 24M,
+      4K60 → 60M) and **decode** hwaccel auto-detect
       (`--no-hw` forces software for both, explicit `--profile` overrides), ffmpeg
       `--profile` (built-in + user JSON), `--bitrate RATE` (overrides `-b:v`
       regardless of source), **`--jobs N`** parallel-chunk render with lossless

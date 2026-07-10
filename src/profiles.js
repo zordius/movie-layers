@@ -36,10 +36,33 @@ export const BUILTIN_PROFILES = {
  * Hardware H.264 encoders, in preference order, for the auto-upgrade path. The first
  * one this ffmpeg build actually has wins. Kept minimal (just `-vcodec` + a bitrate, no
  * `-hwaccel`/preset) so it's robust across ffmpeg versions. HW encoders are bitrate- not
- * CRF-driven; `-b:v 8.5M` is tuned to land near the software x264 default (~8.3 Mbps), so
- * the auto-upgrade buys speed at roughly the same file size.
+ * CRF-driven; the baseline `-b:v 8.5M` is tuned to land near the software x264 default
+ * (~8.3 Mbps) so the auto-upgrade buys speed at roughly the same file size — but the CLI
+ * upgrades it to the YouTube-recommended rate for the source's resolution × fps when
+ * `youtubeBitrate` (below) knows the tier.
  */
 const HW_BITRATE = '8.5M'
+
+/**
+ * YouTube's recommended H.264 upload bitrate (SDR) for a resolution × output fps —
+ * https://support.google.com/youtube/answer/1722171 (read 2026-07-11). Tiered by the
+ * frame's SHORT side, so portrait/vertical clips land in their natural tier; > 40 fps
+ * reads as the 48/50/60 "high frame rate" column. 2160p uses the middle of YouTube's
+ * published range (53–68 / 35–45). Returns `{ rate, tier }` (ffmpeg rate string +
+ * the YouTube tier it came from, e.g. `{ rate: '24M', tier: '1440p60' }`), or null
+ * when the inputs are unknown or the source is below the 1080p tier (YouTube's
+ * ≤720p recommendations sit under the flat HW_BITRATE baseline already).
+ */
+export function youtubeBitrate(width, height, fps) {
+  if (!width || !height || !fps) return null
+  const hfr = fps > 40
+  const short = Math.min(width, height)
+  const pick = (p, rate30, rate60) => ({ rate: hfr ? rate60 : rate30, tier: `${p}p${hfr ? '60' : '30'}` })
+  if (short > 1700) return pick(2160, '40M', '60M') // 4K
+  if (short > 1200) return pick(1440, '16M', '24M') // GoPro 2.7K's 1520 lands here
+  if (short > 800) return pick(1080, '8M', '12M')
+  return null
+}
 export const HW_ENCODERS = [
   { codec: 'h264_videotoolbox', label: 'VideoToolbox (Apple)', output: ['-vcodec', 'h264_videotoolbox', '-b:v', HW_BITRATE, '-pix_fmt', 'yuv420p'] },
   { codec: 'h264_nvenc', label: 'NVENC (NVIDIA)', output: ['-vcodec', 'h264_nvenc', '-b:v', HW_BITRATE, '-pix_fmt', 'yuv420p'] },

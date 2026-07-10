@@ -28,7 +28,7 @@ import gpx from './providers/gpx.js'
 import dashboard from './providers/dashboard.js'
 import datetime from './providers/datetime.js'
 import mapProvider from './providers/map.js'
-import { resolveProfile, detectHwEncoder, detectHwDecode, BUILTIN_PROFILES } from './profiles.js'
+import { resolveProfile, detectHwEncoder, detectHwDecode, youtubeBitrate, BUILTIN_PROFILES } from './profiles.js'
 
 // --jobs chunk child processes, tracked so a SIGINT/SIGTERM handler (registered in
 // main()) can kill them explicitly instead of relying on the OS to deliver the signal
@@ -68,7 +68,9 @@ options:
                         or a name from ~/.config/movie-layers/ffmpeg-profiles.json)
   --profile-file PATH   profiles JSON path (default: ~/.config/movie-layers/ffmpeg-profiles.json)
   --bitrate RATE        override the output -b:v (e.g. 8.5M, 8500k) — takes precedence
-                        over --profile and the hw auto-upgrade's own fixed bitrate
+                        over --profile and the hw auto-upgrade's bitrate (which follows
+                        YouTube's recommended rate for the source resolution x fps,
+                        e.g. 1080p60 → 12M, 1440p60 → 24M, 4K60 → 60M)
   --no-hw               disable auto hardware acceleration (software decode + x264 encode)
   --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
   --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
@@ -656,8 +658,16 @@ async function main() {
   } else if (!args['no-hw'] && !args.snapshot) {
     const hw = detectHwEncoder()
     if (hw) {
-      enc = { input: [], output: hw.output, filter: null }
-      log(`  encoder: auto-upgrade → ${hw.label} (${hw.codec}); --no-hw to force software`)
+      // hw encoders are bitrate-driven: scale the flat baseline to YouTube's
+      // recommended upload rate for this source's resolution × output fps (the
+      // output follows the input's size, so `info` is the output tier too);
+      // --bitrate below still overrides this.
+      const yt = youtubeBitrate(info?.width, info?.height, fps)
+      enc = { input: [], output: yt ? withBitrate(hw.output, yt.rate) : hw.output, filter: null }
+      log(
+        `  encoder: auto-upgrade → ${hw.label} (${hw.codec})` +
+          `${yt ? `, ${yt.rate} (YouTube ${yt.tier} recommendation)` : ''}; --no-hw to force software`,
+      )
     }
   }
   if (enc) ffmpegOptions = { inputArgs: enc.input, outputArgs: enc.output, ...(enc.filter ? { filter: enc.filter } : {}) }
