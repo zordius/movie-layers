@@ -48,7 +48,9 @@ export class Engine {
     scale = null, // explicit logical→physical scale (overrides scaleBaseline)
     scaleBaseline = null, // logical baseline height; scale = height / scaleBaseline (e.g. 1080)
     renderStartSec = null, // render only [start,end) of the timeline (a parallel-render chunk);
-    renderEndSec = null, //    base is `-ss`-seeked to start and cut at the chunk's overlay end
+    renderEndSec = null, //    base is `-ss`-seeked to start and cut at the chunk's overlay end;
+    //                      a NEGATIVE value counts back from the end of the full timeline
+    //                      (python-slice style: -30 = durationSec − 30), resolved in _resolve()
     renderWarmupSec = 0, // draw this many seconds before renderStartSec WITHOUT emitting them,
     //                      so stateful gauge smoothing converges to the right value at the seam
     background = null, // css colour to clear with; null = transparent
@@ -125,6 +127,7 @@ export class Engine {
       this.baseVideos = p.baseVideos
       this.baseVideoDurations = p.baseVideoDurations
       this.sources = []
+      this._resolveRenderWindow()
       return
     }
     // segment specs: explicit segments > single baseVideo > synthetic (durationSec)
@@ -196,6 +199,35 @@ export class Engine {
     // instead of opening every physical file just to find where a `-ss` target lands.
     this.baseVideos = specs.filter((s) => s.file).map((s) => s.file)
     this.baseVideoDurations = specs.map((s, i) => (s.file ? this.segments[i].durationSec : null)).filter((d) => d != null)
+
+    this._resolveRenderWindow()
+  }
+
+  /**
+   * Resolve the render window against the now-known timeline: a NEGATIVE
+   * `renderStartSec`/`renderEndSec` counts back from the end of the full timeline
+   * (python-slice style: -30 = durationSec − 30, clamped at 0), and the warm-up is
+   * clamped so it never seeks before 0. Throws when the resolved window is empty
+   * (start ≥ end) — otherwise it would silently render nothing.
+   */
+  _resolveRenderWindow() {
+    const total = this.segments.reduce((sum, s) => sum + s.durationSec, 0)
+    const abs = (v) => (v == null ? null : v < 0 ? Math.max(0, total + v) : v)
+    this._renderStartSec = abs(this._renderStartSec)
+    this._renderEndSec = abs(this._renderEndSec)
+    if (
+      this._renderStartSec != null &&
+      this._renderEndSec != null &&
+      this._renderEndSec <= this._renderStartSec
+    ) {
+      throw new Error(
+        `render range [${this._renderStartSec}s, ${this._renderEndSec}s) is empty — ` +
+          `start ≥ end after resolving against the ${total.toFixed(1)}s timeline`,
+      )
+    }
+    if (this._renderStartSec != null) {
+      this._renderWarmupSec = Math.min(this._renderWarmupSec, this._renderStartSec)
+    }
   }
 
   /**

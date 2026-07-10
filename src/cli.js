@@ -58,9 +58,12 @@ options:
   --jobs N              render in N parallel processes + lossless concat (single clip
                         with an overlay; near-Nx faster until the encode floor)
   --range START,END     render only seconds [START,END) of the clip (one chunk). Each side
-                        is plain seconds or clock time (1:23 = 1m23s, 1:02:03 = 1h02m03s).
-                        A chunk whose START>0 warms up gauge smoothing first, so hand-split
-                        + concat seams don't jump. Boundaries should meet (0,10 then 10,20).
+                        is plain seconds or clock time (1:23 = 1m23s, 1:02:03 = 1h02m03s);
+                        negative = from the END of the clip (--range -30, = last 30 s,
+                        --range -60,-30 = the 30 s before that); an empty side = clip
+                        start/end. A chunk whose START>0 warms up gauge smoothing first, so
+                        hand-split + concat seams don't jump. Boundaries should meet
+                        (0,10 then 10,20).
   --profile NAME        ffmpeg encode profile (built-in: ${Object.keys(BUILTIN_PROFILES).sort().join(', ')};
                         or a name from ~/.config/movie-layers/ffmpeg-profiles.json)
   --profile-file PATH   profiles JSON path (default: ~/.config/movie-layers/ffmpeg-profiles.json)
@@ -133,12 +136,25 @@ function fmtDur(sec) {
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
 }
 
-/** Parse one `--range` endpoint: plain seconds ("125", "12.5") or clock time ("1:23", "1:02:03"). */
+/**
+ * Parse one `--range` endpoint: plain seconds ("125", "12.5") or clock time
+ * ("1:23", "1:02:03"). A leading "-" ("-30", "-1:30") counts back from the end
+ * of the clip (resolved once the total duration is known).
+ */
 function parseTimeSpec(s) {
+  if (s.startsWith('-')) {
+    const n = parseTimeSpec(s.slice(1))
+    return n > 0 ? -n : NaN // "-0" / "-" carry no meaning — reject rather than alias 0
+  }
   if (!s.includes(':')) return Number(s)
   const parts = s.split(':').map(Number)
   if (parts.length < 2 || parts.length > 3 || parts.some(Number.isNaN)) return NaN
   return parts.length === 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2] : parts[0] * 60 + parts[1]
+}
+
+/** Resolve one parsed `--range` endpoint against the clip's total duration (negative = from the end). */
+function absRangeEndpoint(v, totalSec) {
+  return v == null ? null : v < 0 ? Math.max(0, totalSec + v) : v
 }
 
 /** Parse a numeric CLI flag; exits with a clear reason on invalid (or non-positive, if required) input. */
@@ -542,10 +558,15 @@ async function main() {
   const out = !args.out ? join(dirname(input), defaultName) : outIsDir ? join(args.out, defaultName) : args.out
   const requestedFps = args.fps ? numFlag('fps', args.fps, { positive: true }) : null // resolved after the probe (default follows the source)
   const widgetFps = args['widget-fps'] ? numFlag('widget-fps', args['widget-fps'], { positive: true }) : null // overlay draw rate; null = = fps
-  const range = args.range ? args.range.split(',').map((s) => parseTimeSpec(s.trim())) : null // chunk render window [start,end] seconds
-  if (range && range.some((n) => !Number.isFinite(n))) {
+  // chunk render window [start,end] seconds; an empty side means "clip start"/"clip end",
+  // a negative side counts back from the end (e.g. `--range -30,` = the last 30 s)
+  const range = args.range
+    ? args.range.split(',').map((s) => (s.trim() === '' ? null : parseTimeSpec(s.trim())))
+    : null
+  if (range && range.some((n) => n !== null && !Number.isFinite(n))) {
     console.error(
-      `error: --range "${args.range}" — expected START,END in seconds or clock time (e.g. --range 1:23,2:00)`,
+      `error: --range "${args.range}" — expected START,END in seconds or clock time ` +
+        `(e.g. --range 1:23,2:00; negative = from the end, e.g. --range -30,)`,
     )
     process.exit(1)
   }
@@ -756,9 +777,15 @@ async function main() {
     if (precomputed) {
       const totalDurationSec = precomputed.segments.reduce((sum, s) => sum + s.durationSec, 0)
       // --range narrows the window --jobs splits into chunks: [0,totalDurationSec) by
-      // default, or [range[0],range[1]) when given.
-      const rangeStart = range?.[0] ?? 0
-      const windowDurationSec = (range?.[1] ?? totalDurationSec) - rangeStart
+      // default, or [range[0],range[1]) when given (negative endpoints resolve from the end)
+      const rangeStart = absRangeEndpoint(range?.[0], totalDurationSec) ?? 0
+      const windowDurationSec = (absRangeEndpoint(range?.[1], totalDurationSec) ?? totalDurationSec) - rangeStart
+      if (windowDurationSec <= 0) {
+        console.error(
+          `error: --range "${args.range}" resolves to an empty window against the ${totalDurationSec.toFixed(1)}s clip`,
+        )
+        process.exit(1)
+      }
       const totalInputBytes = files.reduce((sum, f) => {
         try {
           return sum + statSync(f).size
@@ -802,10 +829,10 @@ async function main() {
     fps,
     inputFps: widgetFps, // overlay draw rate (null → Engine defaults it to fps)
     renderStartSec: range?.[0] ?? null, // a chunk renders only its [start,end) window
-    renderEndSec: range?.[1] ?? null,
+    renderEndSec: range?.[1] ?? null, //   (negative endpoints resolve from the end in the engine)
     // warm-up lead-in for a non-first chunk so gauge smoothing converges at the seam
-    // (~1.5 s ≈ 4× the 0.35 s smoothTime; clamped so it never seeks before 0)
-    renderWarmupSec: range && range[0] > 0 ? Math.min(range[0], 1.5) : 0,
+    // (~1.5 s ≈ 4× the 0.35 s smoothTime; the engine clamps it so it never seeks before 0)
+    renderWarmupSec: range && range[0] != null && range[0] !== 0 ? 1.5 : 0,
     scaleBaseline: baseline, // ratio fix: normalize gadget positions to a 1080 logical space
     clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
     gaugeSmoothing: !args.noSmooth,
@@ -842,7 +869,10 @@ async function main() {
   // "done" lines below instead of the full clip's totals — otherwise these headline
   // numbers contradict the live per-frame progress line, which counts against the window
   // (engine.js render()'s `totalFrames`), not the whole timeline.
-  const renderDurationSec = range ? (range[1] ?? summary.durationSec) - (range[0] ?? 0) : summary.durationSec
+  const renderDurationSec = range
+    ? (absRangeEndpoint(range[1], summary.durationSec) ?? summary.durationSec) -
+      (absRangeEndpoint(range[0], summary.durationSec) ?? 0)
+    : summary.durationSec
   const renderFps = widgetFps ?? fps
   const renderFrameCount = range ? Math.max(1, Math.round(renderDurationSec * renderFps)) : summary.frameCount
 
