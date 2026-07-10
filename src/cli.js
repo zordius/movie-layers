@@ -511,10 +511,17 @@ async function main() {
   // tracked subprocess explicitly before exiting. Chunk children are themselves a full
   // `cli.js` invocation, so each one runs this same handler for its own ffmpeg.
   let killing = false
+  // a --jobs chunk child stays silent here — only the parent announces the break
+  const isChunkChild = process.argv.includes('--precomputed')
   for (const sig of ['SIGINT', 'SIGTERM']) {
     process.on(sig, () => {
       if (killing) return
       killing = true
+      // ffmpeg's stderr is piped (ffmpeg.js), so killing it below can't spew
+      // shutdown noise onto the terminal — announce the break instead.
+      if (!isChunkChild) {
+        console.error(`\n${sig === 'SIGINT' ? 'interrupted' : 'terminated'} — stopping ffmpeg (partial output is unfinished, no trailer)`)
+      }
       for (const p of activeChildren) {
         try {
           p.kill(sig)

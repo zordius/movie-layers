@@ -20,6 +20,22 @@ function track(proc) {
 }
 
 /**
+ * Buffer a spawned ffmpeg's piped stderr (keeping the tail) and return a getter.
+ * stderr is piped, NOT inherited, so an interrupted ffmpeg (Ctrl+C kills it via
+ * cli.js's signal handler) can't spew shutdown noise onto the terminal — the
+ * buffer simply dies with the process. On a real failure the caller appends the
+ * tail to its thrown error instead, which also reads better than raw streaming.
+ */
+function stderrTail(proc, cap = 8192) {
+  let buf = ''
+  proc.stderr?.on('data', (d) => {
+    buf += d
+    if (buf.length > cap) buf = buf.slice(-cap)
+  })
+  return () => buf.trim()
+}
+
+/**
  * Decode a single video frame at `atSec` and return it as PNG bytes. `-ss` before
  * `-i` is a fast (keyframe) seek — fine for a preview thumbnail. Used by
  * Engine.snapshot to composite the overlay over the real footage.
@@ -78,14 +94,18 @@ export function concatCopy(files, output, { ffmpeg = 'ffmpeg', creationTime = nu
         }
       }
     }
-    const proc = track(spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'inherit'] }))
+    const proc = track(spawn(ffmpeg, args, { stdio: ['ignore', 'inherit', 'pipe'] }))
+    const tail = stderrTail(proc)
     proc.on('error', (e) => {
       cleanup()
       reject(new Error(`Unable to run ffmpeg (${e.message})`))
     })
     proc.on('close', (code) => {
       cleanup()
-      code === 0 ? resolveP(output) : reject(new Error(`ffmpeg stitch exited with code ${code}`))
+      const err = tail()
+      code === 0
+        ? resolveP(output)
+        : reject(new Error(`ffmpeg stitch exited with code ${code}${err ? `:\n${err}` : ''}`))
     })
   })
 }
@@ -194,7 +214,8 @@ export class FfmpegPipe {
     args.push(this.output)
 
     this.onCommand?.([this.ffmpeg, ...args])
-    this.proc = track(spawn(this.ffmpeg, args, { stdio: ['pipe', 'inherit', 'inherit'] }))
+    this.proc = track(spawn(this.ffmpeg, args, { stdio: ['pipe', 'inherit', 'pipe'] }))
+    this._stderrTail = stderrTail(this.proc)
     this.closed = once(this.proc, 'close')
     return this
   }
@@ -216,6 +237,9 @@ export class FfmpegPipe {
         /* best-effort */
       }
     }
-    if (code !== 0) throw new Error(`ffmpeg exited with code ${code}`)
+    if (code !== 0) {
+      const err = this._stderrTail?.() ?? ''
+      throw new Error(`ffmpeg exited with code ${code}${err ? `:\n${err}` : ''}`)
+    }
   }
 }
