@@ -552,7 +552,7 @@ class Gradient extends Layer {
         const tc = f.timeSec - half + (i / N) * 2 * half
         ys.push(scalarAt(grad, tc, 3) == null ? null : scalarAt(alt, tc, 3))
       }
-      const vs = 2 // fixed scale: 1 m = 2 px (no dynamic zoom)
+      const vs = 1 // fixed scale: 1 m = 1 px (no dynamic zoom)
       ctx.save()
       ctx.beginPath()
       ctx.rect(bx, by, bw, bh)
@@ -581,13 +581,13 @@ class Gradient extends Layer {
       }
       ctx.fillStyle = BLUE
       ctx.fill()
-      // 5 m horizontal gridlines, snapped to integer 5 m, clipped to the blue region
+      // 10 m horizontal gridlines, snapped to integer 10 m, clipped to the blue region
       ctx.clip()
       ctx.strokeStyle = WHITE
       ctx.lineWidth = 1
       const span = bh / 2 / vs // metres visible each side of centre
       ctx.beginPath()
-      for (let m = Math.ceil((cur - span) / 5) * 5; m <= cur + span; m += 5) {
+      for (let m = Math.ceil((cur - span) / 10) * 10; m <= cur + span; m += 10) {
         const py = ccy - (m - cur) * vs // no pixel-snap: must glide in sync with the fill
         ctx.moveTo(bx, py)
         ctx.lineTo(bx + bw, py)
