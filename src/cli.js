@@ -296,8 +296,8 @@ export function defaultLayout({
 }) {
   const M = 5 // edge margin (logical px) — hug the corners
   const row = 997 // bottom-row top: panel height ≈ 78 → its bottom sits ~M from 1080
-  const ROW_MIN = 690 // the bottom row (latlon+altitude+gradient) spans ~666 px wide
-  const ROW_W = 666 // latlon→gradient span (276 +5+180 +5+200)
+  const ROW_MIN = 706 // the bottom row (latlon+altitude+gradient) spans ~682 px wide
+  const ROW_W = 682 // latlon→gradient span (276 +5+180 +5+216)
   const GAUGE_W = 276 // widest single gauge (latlon), for the stacked column
   const landscape = logicalW >= ROW_MIN
 
@@ -325,9 +325,9 @@ export function defaultLayout({
 
   // Which bottom-row gauges the clip's data actually supports — independent checks
   // (any subset can be missing): altitude/gradient need elevation, latlon needs GPS.
-  // Widths match ROW_W's own breakdown (276 +5+180 +5+200), for landscape's
+  // Widths match ROW_W's own breakdown (276 +5+180 +5+216), for landscape's
   // left-to-right layout.
-  const GAUGE_WIDTH = { latlon: 276, altitude: 180, gradient: 200 }
+  const GAUGE_WIDTH = { latlon: 276, altitude: 180, gradient: 216 }
   const gauges = [
     ...(hasGps ? ['latlon'] : []),
     ...(hasAltitude ? ['altitude'] : []),

@@ -512,7 +512,7 @@ class Gradient extends Layer {
   }
   draw(ctx, f) {
     const { x, y } = this
-    const w = 200
+    const w = 216 // widened for the right-edge % scale + indicator beside the mini-profile
     const h = H
     panel(ctx, x, y, w, h)
     const sgr = f.data.sample('gradient')
@@ -615,15 +615,45 @@ class Gradient extends Layer {
     ctx.arc(ccx, ccy, 3, 0, Math.PI * 2)
     ctx.fill()
 
-    // label + number (kept)
+    // right-edge % scale: 5 white ticks spanning +100% (box top) … −100% (box
+    // bottom), with a left-pointing green indicator at the current (smoothed)
+    // gradient — an at-a-glance position on the fixed ±100% range, independent of
+    // the mini-profile's own metres scale
+    const ex = bx + bw
+    // ticks sit OUTSIDE the box (rightward), under the indicator's travel path so
+    // the triangle covers them as it passes; the 0% centre tick is bolder
+    ctx.strokeStyle = WHITE
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (const i of [0, 1, 3, 4]) {
+      const ty = by + (i / 4) * bh
+      ctx.moveTo(ex, ty)
+      ctx.lineTo(ex + 5, ty)
+    }
+    ctx.stroke()
+    ctx.lineWidth = 2.5
+    ctx.beginPath()
+    ctx.moveTo(ex, ccy)
+    ctx.lineTo(ex + 5, ccy)
+    ctx.stroke()
+    const gy = ccy - (Math.max(-100, Math.min(100, g)) / 100) * (bh / 2)
+    ctx.fillStyle = sgr.valid ? ACCENT : GRAY
+    ctx.beginPath()
+    ctx.moveTo(ex + 1, gy) // apex on the box edge, pointing left
+    ctx.lineTo(ex + 8, gy - 4.5)
+    ctx.lineTo(ex + 8, gy + 4.5)
+    ctx.closePath()
+    ctx.fill()
+
+    // label + number (kept), shifted right to clear the scale + indicator
     ctx.fillStyle = CYAN
     ctx.font = `600 18px ${FONT}`
     ctx.textBaseline = 'alphabetic'
-    ctx.fillText('GRADIENT', x + 70, y + 28)
+    ctx.fillText('GRADIENT', x + 86, y + 28)
     ctx.fillStyle = sgr.valid ? WHITE : GRAY
     ctx.font = `700 32px ${MONO}`
     const gstr = `${g >= 0 ? '+' : '-'}${Math.abs(g).toFixed(1).padStart(4, ' ')}%`
-    ctx.fillText(gstr, x + 70, y + 60)
+    ctx.fillText(gstr, x + 86, y + 60)
   }
 }
 
