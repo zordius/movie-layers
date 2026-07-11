@@ -15,7 +15,7 @@
  * Tiles are cached on disk so a re-render reuses them. Respect the tile provider's
  * usage policy (a descriptive User-Agent, no bulk scraping).
  */
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, rmdirSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -44,6 +44,59 @@ export function defaultResortCacheDir() {
 }
 
 /**
+ * Cross-process single-flight around a disk-cached lookup. A `--jobs N` render
+ * spawns N chunk children at the same instant, and each one's map layer used to
+ * fire its own Overpass query before any of them had written the shared cache —
+ * the free Overpass instance caps concurrent queries per IP, so some chunks got
+ * rate-limited (silently, chunks run --quiet) and their place label went missing
+ * from that chunk's slice of the video (label vanishing at a chunk seam).
+ *
+ * First process to grab the lock (atomic mkdir of `<cacheFile>.lock`) runs
+ * `doFetch` (which fetches + writes the cache); the others poll for the cache
+ * file and read it. Poll timeout (a crashed/failed holder) → fall through to
+ * fetching ourselves, so the lock can never wedge a render.
+ */
+async function withCacheLock(file, cacheDir, doFetch) {
+  try {
+    await mkdir(cacheDir, { recursive: true }) // the lock lives inside cacheDir
+  } catch {
+    /* fall through — doFetch's own cache write is best-effort anyway */
+  }
+  const lock = `${file}.lock`
+  let locked = false
+  try {
+    mkdirSync(lock)
+    locked = true
+  } catch {
+    /* EEXIST: another process is already fetching this key */
+  }
+  if (!locked) {
+    // the lookup itself times out at 25 s (+ one 3 s retry) — poll a bit past that
+    for (let waited = 0; waited < 32000 && !existsSync(file); waited += 500) {
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    if (existsSync(file)) {
+      try {
+        return JSON.parse(await readFile(file, 'utf8'))
+      } catch {
+        /* corrupt — fetch ourselves below */
+      }
+    }
+  }
+  try {
+    return await doFetch()
+  } finally {
+    if (locked) {
+      try {
+        rmdirSync(lock)
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+}
+
+/**
  * Ski resort name(s) (JA + EN) whose OSM `landuse=winter_sports` boundary overlaps the
  * given bbox, via a single Overpass query — cached to disk per bbox (rounded to ~100m)
  * so a re-render of the same area never re-queries. Returns `[]` on any failure (no
@@ -64,65 +117,66 @@ async function fetchResortPolys({ north, south, east, west, cacheDir, userAgent,
       /* corrupt cache entry — refetch below */
     }
   }
-  const pad = 0.02 // ~2km — a resort boundary can extend slightly past the track's own bbox
-  const s = south - pad
-  const w = west - pad
-  const n = north + pad
-  const e = east + pad
-  const query =
-    `[out:json][timeout:25];` +
-    `(way["landuse"="winter_sports"](${s},${w},${n},${e});` +
-    `relation["landuse"="winter_sports"](${s},${w},${n},${e}););` +
-    `out geom;`
+  return withCacheLock(file, cacheDir, async () => {
+    const pad = 0.02 // ~2km — a resort boundary can extend slightly past the track's own bbox
+    const s = south - pad
+    const w = west - pad
+    const n = north + pad
+    const e = east + pad
+    const query =
+      `[out:json][timeout:25];` +
+      `(way["landuse"="winter_sports"](${s},${w},${n},${e});` +
+      `relation["landuse"="winter_sports"](${s},${w},${n},${e}););` +
+      `out geom;`
 
-  async function attempt() {
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: { 'User-Agent': userAgent, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
-    })
-    const text = await res.text()
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    let data
-    try {
-      data = JSON.parse(text)
-    } catch {
-      throw new Error('non-JSON response (Overpass likely overloaded)')
+    async function attempt() {
+      const res = await fetch(OVERPASS_URL, {
+        method: 'POST',
+        headers: { 'User-Agent': userAgent, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+      })
+      const text = await res.text()
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      let data
+      try {
+        data = JSON.parse(text)
+      } catch {
+        throw new Error('non-JSON response (Overpass likely overloaded)')
+      }
+      if (!Array.isArray(data.elements)) throw new Error('unexpected response shape (no elements[])')
+      return data
     }
-    if (!Array.isArray(data.elements)) throw new Error('unexpected response shape (no elements[])')
-    return data
-  }
 
-  const polys = []
-  let data = null
-  try {
-    data = await attempt()
-  } catch (firstError) {
-    await new Promise((r) => setTimeout(r, 3000))
+    const polys = []
+    let data = null
     try {
       data = await attempt()
-    } catch (secondError) {
-      onLog?.(`map: resort lookup failed (${secondError.message}, retried once after "${firstError.message}") — no label`)
+    } catch (firstError) {
+      await new Promise((r) => setTimeout(r, 3000))
+      try {
+        data = await attempt()
+      } catch (secondError) {
+        onLog?.(`map: resort lookup failed (${secondError.message}, retried once after "${firstError.message}") — no label`)
+      }
     }
-  }
-  if (!data) return polys // both attempts failed — DON'T cache a failure as "genuinely zero resorts";
-  //                          a future re-render should retry fresh instead of being stuck on this forever
-  for (const el of data.elements) {
-    const ja = el.tags?.name
-    if (!ja) continue
-    const en = el.tags?.['name:en'] ?? el.tags?.['name:ja-Latn'] ?? ja
-    if (el.type === 'way' && el.geometry) polys.push({ ja, en, ring: el.geometry })
-    else if (el.type === 'relation' && el.members) {
-      for (const m of el.members) if (m.role === 'outer' && m.geometry) polys.push({ ja, en, ring: m.geometry })
+    if (!data) return polys // both attempts failed — DON'T cache a failure as "genuinely zero resorts";
+    //                          a future re-render should retry fresh instead of being stuck on this forever
+    for (const el of data.elements) {
+      const ja = el.tags?.name
+      if (!ja) continue
+      const en = el.tags?.['name:en'] ?? el.tags?.['name:ja-Latn'] ?? ja
+      if (el.type === 'way' && el.geometry) polys.push({ ja, en, ring: el.geometry })
+      else if (el.type === 'relation' && el.members) {
+        for (const m of el.members) if (m.role === 'outer' && m.geometry) polys.push({ ja, en, ring: m.geometry })
+      }
     }
-  }
-  try {
-    await mkdir(cacheDir, { recursive: true })
-    await writeFile(file, JSON.stringify(polys))
-  } catch {
-    /* best-effort cache write */
-  }
-  return polys
+    try {
+      await writeFile(file, JSON.stringify(polys))
+    } catch {
+      /* best-effort cache write */
+    }
+    return polys
+  })
 }
 
 /**
@@ -145,56 +199,57 @@ async function fetchCityNames({ points, cacheDir, userAgent, onLog }) {
       /* corrupt cache entry — refetch below */
     }
   }
-  const isIns = points.map((p, i) => `is_in(${p.lat.toFixed(6)},${p.lon.toFixed(6)})->.p${i};`).join('')
-  const union = `(${points.map((_, i) => `area.p${i};`).join('')})->.all;`
-  const query = `[out:json][timeout:25];${isIns}${union}area.all["boundary"="administrative"]["admin_level"~"^[678]$"];out tags;`
+  return withCacheLock(file, cacheDir, async () => {
+    const isIns = points.map((p, i) => `is_in(${p.lat.toFixed(6)},${p.lon.toFixed(6)})->.p${i};`).join('')
+    const union = `(${points.map((_, i) => `area.p${i};`).join('')})->.all;`
+    const query = `[out:json][timeout:25];${isIns}${union}area.all["boundary"="administrative"]["admin_level"~"^[678]$"];out tags;`
 
-  async function attempt() {
-    const res = await fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: { 'User-Agent': userAgent, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `data=${encodeURIComponent(query)}`,
-    })
-    const text = await res.text()
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    let data
-    try {
-      data = JSON.parse(text)
-    } catch {
-      throw new Error('non-JSON response (Overpass likely overloaded)')
+    async function attempt() {
+      const res = await fetch(OVERPASS_URL, {
+        method: 'POST',
+        headers: { 'User-Agent': userAgent, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+      })
+      const text = await res.text()
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      let data
+      try {
+        data = JSON.parse(text)
+      } catch {
+        throw new Error('non-JSON response (Overpass likely overloaded)')
+      }
+      if (!Array.isArray(data.elements)) throw new Error('unexpected response shape (no elements[])')
+      return data
     }
-    if (!Array.isArray(data.elements)) throw new Error('unexpected response shape (no elements[])')
-    return data
-  }
 
-  let data = null
-  try {
-    data = await attempt()
-  } catch (firstError) {
-    await new Promise((r) => setTimeout(r, 3000))
+    let data = null
     try {
       data = await attempt()
-    } catch (secondError) {
-      onLog?.(`map: city lookup failed (${secondError.message}, retried once after "${firstError.message}") — no label`)
+    } catch (firstError) {
+      await new Promise((r) => setTimeout(r, 3000))
+      try {
+        data = await attempt()
+      } catch (secondError) {
+        onLog?.(`map: city lookup failed (${secondError.message}, retried once after "${firstError.message}") — no label`)
+      }
     }
-  }
-  if (!data) return null // both attempts failed — don't cache, retry fresh next render
-  const els = data.elements.filter((e) => e.tags?.name && Number.isFinite(Number(e.tags.admin_level)))
-  let out = null
-  if (els.length) {
-    const top = Math.max(...els.map((e) => Number(e.tags.admin_level)))
-    const hits = els.filter((e) => Number(e.tags.admin_level) === top)
-    const ja = [...new Set(hits.map((e) => e.tags.name))].join(' / ')
-    const en = [...new Set(hits.map((e) => e.tags['name:en'] ?? e.tags['name:ja-Latn'] ?? e.tags.name))].join(' / ')
-    out = { ja, en }
-  }
-  try {
-    await mkdir(cacheDir, { recursive: true })
-    await writeFile(file, JSON.stringify(out))
-  } catch {
-    /* best-effort cache write */
-  }
-  return out
+    if (!data) return null // both attempts failed — don't cache, retry fresh next render
+    const els = data.elements.filter((e) => e.tags?.name && Number.isFinite(Number(e.tags.admin_level)))
+    let out = null
+    if (els.length) {
+      const top = Math.max(...els.map((e) => Number(e.tags.admin_level)))
+      const hits = els.filter((e) => Number(e.tags.admin_level) === top)
+      const ja = [...new Set(hits.map((e) => e.tags.name))].join(' / ')
+      const en = [...new Set(hits.map((e) => e.tags['name:en'] ?? e.tags['name:ja-Latn'] ?? e.tags.name))].join(' / ')
+      out = { ja, en }
+    }
+    try {
+      await writeFile(file, JSON.stringify(out))
+    } catch {
+      /* best-effort cache write */
+    }
+    return out
+  })
 }
 
 /** Tile bytes from the disk cache, else fetched and cached. */
