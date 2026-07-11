@@ -15,9 +15,9 @@
 // dashboard; the layout is authored in a 1080-tall LOGICAL space and the engine's
 // `scaleBaseline` normalizes it, so the gadgets sit correctly at any resolution /
 // aspect ratio (2.7K, 4K, 4:3, …), not just 1080p.
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { availableParallelism, tmpdir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -55,8 +55,10 @@ options:
   --fps N               output framerate (default 30)
   --widget-fps N        rate the overlay/widgets are drawn (default: = --fps); lower
                         = fewer canvas frames → faster render, base video stays --fps
-  --jobs N              render in N parallel processes + lossless concat (single clip
-                        with an overlay; near-Nx faster until the encode floor)
+  --jobs N              render in N parallel processes + lossless concat (near-Nx
+                        faster until the encode floor). Default: AUTO — half the
+                        physical cores, rounded down; --jobs 1 disables parallelism,
+                        an explicit --jobs N overrides the auto pick
   --range START,END     render only seconds [START,END) of the clip (one chunk). Each side
                         is plain seconds or clock time (1:23 = 1m23s, 1:02:03 = 1h02m03s);
                         negative = from the END of the clip (--range -30, = last 30 s,
@@ -160,6 +162,24 @@ function parseTimeSpec(s) {
 /** Resolve one parsed `--range` endpoint against the clip's total duration (negative = from the end). */
 function absRangeEndpoint(v, totalSec) {
   return v == null ? null : v < 0 ? Math.max(0, totalSec + v) : v
+}
+
+/**
+ * Physical core count for the auto --jobs default. `availableParallelism()`
+ * reports hardware THREADS, which overstates real cores 2× on SMT machines —
+ * macOS exposes the physical count via sysctl; elsewhere fall back to threads
+ * (exact on non-SMT machines like Apple Silicon, an overcount on SMT Linux).
+ */
+function physicalCores() {
+  if (process.platform === 'darwin') {
+    try {
+      const n = Number(execFileSync('sysctl', ['-n', 'hw.physicalcpu'], { encoding: 'utf8' }).trim())
+      if (Number.isFinite(n) && n > 0) return n
+    } catch {
+      /* sysctl unavailable — fall through */
+    }
+  }
+  return availableParallelism()
 }
 
 /** Parse a numeric CLI flag; exits with a clear reason on invalid (or non-positive, if required) input. */
@@ -582,7 +602,19 @@ async function main() {
     )
     process.exit(1)
   }
-  const jobs = args.jobs ? Math.max(1, Math.floor(numFlag('jobs', args.jobs, { positive: true }))) : 1
+  // Automatic multi-core render: --jobs defaults to floor(physical cores / 2) —
+  // each job runs canvas draw + its own multi-threaded ffmpeg, and they all share
+  // one hw encoder + disk, so half the cores is the sweet spot; hardware THREADS
+  // would double-count SMT. `--jobs 1` opts out, an explicit `--jobs N` overrides,
+  // and a --precomputed chunk child NEVER re-parallelizes (it IS one of the jobs —
+  // recursing would fork-bomb).
+  const jobsExplicit = !!args.jobs
+  const autoCores = physicalCores()
+  const jobs = args.precomputed
+    ? 1
+    : jobsExplicit
+      ? Math.max(1, Math.floor(numFlag('jobs', args.jobs, { positive: true })))
+      : Math.max(1, Math.floor(autoCores / 2))
   const baseline = args.baseline ? numFlag('baseline', args.baseline, { positive: true }) : 1080
   const withDatetime = !args.noDatetime
   const log = args.quiet ? () => {} : (...a) => console.log(...a) // --quiet silences stdout info/progress
@@ -781,7 +813,7 @@ async function main() {
   // crossing a real segment boundary). A user-supplied --range composes with --jobs too:
   // instead of splitting the WHOLE clip into N chunks, it splits just [range[0],range[1])
   // — each chunk's own --range (passed down to it) is offset within that window.
-  if (jobs > 1 && args.snapshot)
+  if (jobsExplicit && jobs > 1 && args.snapshot)
     console.warn(`note: --jobs ignored — a snapshot renders one frame, nothing to parallelize`)
   if (jobs > 1 && !args.snapshot && layout.length > 0) {
     // `precomputed` may already be populated by the channel-presence probe above
@@ -824,7 +856,12 @@ async function main() {
       }, 0)
       const precomputedPath = join(tmpdir(), `ml-precomputed-${process.pid}.json`)
       writeFileSync(precomputedPath, JSON.stringify(precomputed))
-      log(`movie-layers: parallel render, ${jobs} jobs${files.length > 1 ? ` (${files.length} clips)` : ''}`)
+      log(
+        jobsExplicit
+          ? `movie-layers: parallel render, ${jobs} jobs${files.length > 1 ? ` (${files.length} clips)` : ''}`
+          : `movie-layers: parallel render, auto ${jobs} jobs (half of ${autoCores} cores` +
+            `${files.length > 1 ? `, ${files.length} clips` : ''}; --jobs 1 to disable, --jobs N to override)`,
+      )
       await renderParallel({
         rawArgv: process.argv.slice(2),
         jobs,
@@ -891,7 +928,7 @@ async function main() {
     console.warn(`note: --profile ${args.profile} ignored — a pure stitch is a stream copy (no re-encode)`)
   if (args.bitrate && !args.snapshot && summary.layers.length === 0)
     console.warn(`note: --bitrate ${args.bitrate} ignored — a pure stitch is a stream copy (no re-encode)`)
-  if (jobs > 1 && !args.range && summary.layers.length === 0)
+  if (jobsExplicit && jobs > 1 && !args.range && summary.layers.length === 0)
     console.warn(`note: --jobs ignored — a pure stitch is already one fast stream copy`)
 
   // --range narrows what actually gets rendered; reflect that window in the "rendering"/

@@ -170,7 +170,8 @@ Done:
       `--profile` (built-in + user JSON), `--bitrate RATE` (overrides `-b:v`
       regardless of source), **`--jobs N`** parallel-chunk render with lossless
       concat (a warm-up overlap keeps gauge smoothing seamless across seams, and
-      composes with `--range`), `--range START,END` sub-clip render (each side is
+      composes with `--range`; auto-enabled at half the physical cores —
+      `--jobs 1` disables, an explicit `--jobs N` overrides), `--range START,END` sub-clip render (each side is
       plain seconds or clock time, e.g. `1:23,2:00`; negative = from the end of the
       clip, e.g. `-30,` = the last 30 s; an empty side = clip start/end), and `--widget-fps` (overlay
       draw rate, independent of output `--fps`)
