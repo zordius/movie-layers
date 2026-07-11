@@ -1,6 +1,6 @@
 import { Layer, defineProvider } from '../layer.js'
 import { Smoother } from '../smooth.js'
-import { projectTrack } from '../geo.js'
+import { ensurePanPath, projectTrack } from '../geo.js'
 
 /**
  * Smoothed display value for a numeric gauge — presentation-only (dashboard-spec
@@ -679,7 +679,19 @@ class Track extends Layer {
     if (!series || series.length < 2) return
     const p = this._project(series)
     if (!p) return
-    const { project, ppm, offx, offy, drawH } = p
+    const { project: rawProject, ppm, offx, offy, drawH } = p
+
+    // Pan the projection (precomputed path, geo.js) so the current-position dot
+    // keeps clear of the box edges and the chrome (inset / labels). Shared with
+    // the basemap layer via the same box key — if provider-map is in the layout
+    // it prepared first and already computed the path WITH the label zone; the
+    // `label: false` here only applies when there is no map layer at all.
+    this._pan ??= ensurePanPath(series, { x: this.x, y: this.y, w: this.w, h: this.h }, { label: false })
+    const pan = this._pan.at(f.timeSec)
+    const project = (lat, lon) => {
+      const [px, py] = rawProject(lat, lon)
+      return [px + pan.dx, py + pan.dy]
+    }
 
     // semi-transparent panel + metric grid (cell = a nice 1/2/5 m value whose on-screen
     // step is ≥ 40 px), behind the track
@@ -695,11 +707,12 @@ class Track extends Layer {
         ctx.strokeStyle = GRID
         ctx.lineWidth = 1
         ctx.beginPath()
-        for (let gx = offx - Math.floor((offx - this.x) / gpx) * gpx; gx <= this.x + this.w; gx += gpx) {
+        const gridX = offx + pan.dx // metric grid is world-anchored → pans with the track
+        for (let gx = gridX - Math.floor((gridX - this.x) / gpx) * gpx; gx <= this.x + this.w; gx += gpx) {
           ctx.moveTo(gx, this.y)
           ctx.lineTo(gx, this.y + this.h)
         }
-        const baseY = offy + drawH // world north = 0
+        const baseY = offy + drawH + pan.dy // world north = 0
         for (let gy = baseY - Math.floor((baseY - this.y) / gpx) * gpx; gy <= this.y + this.h; gy += gpx) {
           ctx.moveTo(this.x, gy)
           ctx.lineTo(this.x + this.w, gy)
@@ -713,6 +726,11 @@ class Track extends Layer {
       }
     }
 
+    // panning can push the fitted track past the box — clip the line + dot to it
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(this.x, this.y, this.w, this.h)
+    ctx.clip()
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
     // dark outline then white line
@@ -750,6 +768,7 @@ class Track extends Layer {
       ctx.arc(px, py, dotR, 0, Math.PI * 2)
       ctx.fill()
     }
+    ctx.restore() // end box clip (line + dot)
 
     // moving-window inset (zoomed, current-position-centred) in the top-left corner
     if (this.inset) {

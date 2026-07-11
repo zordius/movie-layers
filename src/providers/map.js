@@ -23,7 +23,7 @@ import { join } from 'node:path'
 import canvasPkg from '@napi-rs/canvas'
 
 import { Layer, defineProvider } from '../layer.js'
-import { projectTrack, lon2tile, lat2tile, tile2lon, tile2lat, chooseZoom, pointInRing } from '../geo.js'
+import { ensurePanPath, projectTrack, lon2tile, lat2tile, tile2lon, tile2lat, chooseZoom, pointInRing } from '../geo.js'
 
 const { createCanvas, loadImage } = canvasPkg
 
@@ -328,9 +328,22 @@ class MapLayer extends Layer {
     const proj = projectTrack(series, box)
     if (!proj) return
 
-    // geographic extent the box covers (invert our projection at its corners)
-    const nw = proj.unproject(this.x, this.y)
-    const se = proj.unproject(this.x + this.w, this.y + this.h)
+    // Precompute the shared pan path (geo.js) BEFORE sizing the basemap: panning
+    // shifts the blit, so the offscreen must carry enough bleed on each side to
+    // keep the box covered at the offsets' extremes. `label: true` — this layer
+    // exists to draw a place label, so its zone is reserved for the dot.
+    this._panPath = ensurePanPath(series, box, { label: true })
+    const bleed = {
+      l: Math.ceil(this._panPath.max.dx1),
+      r: Math.ceil(-this._panPath.max.dx0),
+      t: Math.ceil(this._panPath.max.dy1),
+      b: Math.ceil(-this._panPath.max.dy0),
+    }
+    this._blit = { x: this.x - bleed.l, y: this.y - bleed.t, w: this.w + bleed.l + bleed.r, h: this.h + bleed.t + bleed.b }
+
+    // geographic extent the bleed-expanded box covers (invert our projection at its corners)
+    const nw = proj.unproject(this._blit.x, this._blit.y)
+    const se = proj.unproject(this._blit.x + this._blit.w, this._blit.y + this._blit.h)
     const north = Math.max(nw.lat, se.lat)
     const south = Math.min(nw.lat, se.lat)
     const west = Math.min(nw.lon, se.lon)
@@ -345,14 +358,13 @@ class MapLayer extends Layer {
     const tiles = []
     for (let xt = xa; xt <= xb; xt++) for (let yt = ya; yt <= yb; yt++) tiles.push({ xt, yt })
 
-    // offscreen at physical resolution; draw in logical coords, box origin → 0
-    const off = createCanvas(Math.max(1, Math.ceil(this.w * scale)), Math.max(1, Math.ceil(this.h * scale)))
+    // offscreen at physical resolution, sized to the bleed-expanded box; draw in
+    // logical coords, expanded origin → 0 (the canvas edge is the only clip —
+    // draw() clips the shifted blit back to the visible box)
+    const off = createCanvas(Math.max(1, Math.ceil(this._blit.w * scale)), Math.max(1, Math.ceil(this._blit.h * scale)))
     const octx = off.getContext('2d')
     octx.scale(scale, scale)
-    octx.translate(-this.x, -this.y)
-    octx.beginPath()
-    octx.rect(this.x, this.y, this.w, this.h)
-    octx.clip()
+    octx.translate(-this._blit.x, -this._blit.y)
 
     // place-name lookup runs alongside the tile fetch (independent network calls):
     // ski → resort polygons (point-in-ring against the track below); city → is_in
@@ -442,11 +454,19 @@ class MapLayer extends Layer {
     this._img = off
   }
 
-  draw(ctx) {
+  draw(ctx, f) {
     if (!this._img) return
+    const pan = this._panPath?.at(f?.timeSec ?? 0) ?? { dx: 0, dy: 0 }
     const prev = ctx.globalAlpha
     if (this.opacity !== 1) ctx.globalAlpha = this.opacity
-    ctx.drawImage(this._img, this.x, this.y, this.w, this.h)
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(this.x, this.y, this.w, this.h)
+    ctx.clip()
+    // blit the bleed-expanded basemap shifted by the shared pan offset — the
+    // track widget pans its projection by the same path, keeping them registered
+    ctx.drawImage(this._img, this._blit.x + pan.dx, this._blit.y + pan.dy, this._blit.w, this._blit.h)
+    ctx.restore()
     ctx.globalAlpha = prev
   }
 }
