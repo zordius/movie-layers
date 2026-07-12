@@ -9,6 +9,9 @@
   "bin": {
     "movie-layers": "src/cli.js"
   },
+  "files": [
+    "src"
+  ],
   "exports": {
     ".": "./src/index.js",
     "./svg": "./src/providers/svg.js",
