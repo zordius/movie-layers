@@ -165,6 +165,7 @@ export default function gopro(opts = {}) {
       const dspeed = [] // GPS-derived speed, used only if the device reported none (dashboard-spec §3)
       const speedWindowSec = opts.speedWindowSec ?? 1
       const tzVotes = new Map() // per-file tz candidates → majority wins (below)
+      const tzVotesVerified = new Map() // …but votes from regression-VERIFIED files outrank all others
 
       // Elevation smoothing (default ON): gpx-stabilizer rewrites each survivor's `ele`
       // to a slope-stable value, so the derived `gradient` stops jittering (raw GPS
@@ -196,13 +197,16 @@ export default function gopro(opts = {}) {
           ...(opts.rate != null ? { rate: opts.rate } : {}),
           stabilize: stab,
         })
-        if (res.timezone) tzVotes.set(res.timezone, (tzVotes.get(res.timezone) ?? 0) + 1)
         const good = goodFixes(res.points)
         if (good.length === 0) continue
         // Anchor on the contract's best start: the regression-verified true-start
         // (so the first fix sits lockDelay into playback, gray before it) when
         // available, else this segment's own first fix (good[0]).
         const verified = res.clock?.verified === true
+        if (res.timezone) {
+          tzVotes.set(res.timezone, (tzVotes.get(res.timezone) ?? 0) + 1)
+          if (verified) tzVotesVerified.set(res.timezone, (tzVotesVerified.get(res.timezone) ?? 0) + 1)
+        }
         const anchor = verified && finite(res.startUtc) ? res.startUtc : good[0].time
         if (!opts.clockOnly) {
           appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec, skiGrade, maxGap)
@@ -221,8 +225,11 @@ export default function gopro(opts = {}) {
 
       // timezone: MAJORITY vote across files (ties → first seen, Map preserves
       // insertion order) — "first file wins" let one clip with garbage pre-lock
-      // GPS points steer the whole render's timezone.
-      const timezone = [...tzVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+      // GPS points steer the whole render's timezone. Votes from regression-
+      // VERIFIED files (internally consistent GPS → trustworthy coordinates)
+      // outrank the rest entirely; the full pool only decides when none verified.
+      const pool = tzVotesVerified.size ? tzVotesVerified : tzVotes
+      const timezone = [...pool.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
 
       // timezone + per-segment GPS clock candidates flow up to the engine; DataSet
       // captures them and the engine adjudicates per spec §5 (explicit > GPS >

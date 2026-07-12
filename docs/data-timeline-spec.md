@@ -218,9 +218,13 @@ confidence:'gps' }]` and the engine upgrades each non-explicit segment over
 neighbour's anchor via cumulative duration (marked `continued`); **back-derive** —
 an *unverified*-GPS segment (delayed first fix) contiguous with a trusted
 (explicit/verified-GPS) anchor inherits its clock, recovering the lock delay (with
-a plausible-delay contiguity guard); **gap detection** — two *independent* reliable
-anchors disagreeing with cumulative duration flag a `gap`; and the
-**regression-verified true start** (below). `frame.segment` now carries
+a plausible-delay contiguity guard); **absurd-anchor demotion** — an *unverified*
+GPS anchor skewed > 30 days from a trusted anchor's cumulative-duration
+expectation (a no-lock track's stale/bogus GPSU arriving as a plausible-looking
+clock) is demoted and refilled by continue-time, instead of poisoning the wall
+clock / footage span / stamped `creation_time`; **gap detection** — two
+*independent* reliable anchors disagreeing with cumulative duration flag a
+`gap`; and the **regression-verified true start** (below). `frame.segment` now carries
 `confidence` + `gap`.
 
 ### Precedence (per segment)

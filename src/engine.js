@@ -289,6 +289,7 @@ export class Engine {
       segs[i].clockSource === 'explicit' || (segs[i].clockSource === 'gps' && segs[i].verified)
     const MAX_LOCK_DELAY_MS = 180000 // 3-minute cold-start time-to-first-fix ceiling
     const NEG_TOL_MS = 2000
+    const MAX_UNVERIFIED_SKEW_MS = 30 * 86400000 // past this vs a trusted anchor, an unverified anchor is garbage (step 2.5)
     for (let i = 0; i < segs.length; i++) {
       if (!(segs[i].clockSource === 'gps' && !segs[i].verified) || segs[i].startUtc == null) continue
       let src = -1
@@ -307,6 +308,17 @@ export class Engine {
       if (lockDelay >= -NEG_TOL_MS && lockDelay <= MAX_LOCK_DELAY_MS) {
         segs[i].startUtc = derived
         segs[i].clockSource = 'continued' // derived from a trusted neighbour, no longer independent
+      } else if (Math.abs(lockDelay) > MAX_UNVERIFIED_SKEW_MS) {
+        // 2.5) absurd-anchor demotion: a no-lock GoPro track can carry a stale /
+        // bogus GPSU (e.g. a years-off date) that arrives here as a plausible-
+        // looking UNVERIFIED 'gps' anchor. Against a TRUSTED anchor, a skew this
+        // large is garbage — not a real recording break (a genuine multi-day
+        // concat with only an unverified first fix is the rare case sacrificed
+        // here; trust wins). Demote so continue-time (step 3) refills it from
+        // the trusted neighbour — otherwise the wall clock, the footage-span
+        // log, and the stamped creation_time all inherit the bogus date.
+        segs[i].startUtc = null
+        segs[i].clockSource = 'none'
       }
     }
 
