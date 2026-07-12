@@ -206,6 +206,10 @@ export class DataSet {
         const c = set.channels.get(name)
         return c ? c.unit : undefined
       },
+      maxGap(name) {
+        const c = set.channels.get(name)
+        return c ? c.maxGap : Infinity
+      },
       has(name) {
         return set.has(name)
       },

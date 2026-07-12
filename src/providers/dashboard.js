@@ -202,6 +202,33 @@ function reticleScale(series, mppPx) {
 
 // moving-window mini-map: whole track gray + travelled green, centred on the current
 // position, with a reticle. (Lifted from the old latlon widget; now a map inset.)
+/**
+ * Build the track polyline path, lifting the pen wherever the signal broke: an
+ * unusable point or an inter-sample time gap > `gapSec` (the gps channel's
+ * maxGap — the same threshold that freezes the widgets) starts a new subpath
+ * instead of drawing a straight bridge across the hole. `untilSec` truncates
+ * (for "travelled so far" passes). Returns whether anything was drawn; the
+ * path's current point is the last drawn sample.
+ */
+function pathTrack(ctx, series, toXY, gapSec, untilSec = Infinity) {
+  let pen = false
+  let prevT = null
+  for (const s of series) {
+    if (s.t > untilSec) break
+    const v = s.value
+    if (!v || v.lat == null) {
+      pen = false
+      continue
+    }
+    const [x, y] = toXY(v)
+    if (!pen || (prevT != null && s.t - prevT > gapSec)) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
+    pen = true
+    prevT = s.t
+  }
+  return pen
+}
+
 function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
   ctx.fillStyle = 'rgba(0,0,0,0.45)' // backing disc for contrast over the big map
   ctx.beginPath()
@@ -246,24 +273,16 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     ctx.lineCap = 'round'
     ctx.lineWidth = 3
     ctx.strokeStyle = GRAY
+    const gapSec = f.data.maxGap?.('gps') ?? Infinity // signal holes lift the pen (pathTrack)
+    const toXY = (v) => [px(v), py(v)]
     ctx.beginPath()
-    let on = false
-    for (const s of series) {
-      if (!s.value || s.value.lat == null) continue
-      on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
-    }
+    pathTrack(ctx, series, toXY, gapSec)
     ctx.stroke()
     // travelled-so-far, dim — the "long ago" base layer (still distinct from the
     // untravelled GRAY track, but duller than the recent highlight drawn next)
     ctx.strokeStyle = ACCENT_DIM
     ctx.beginPath()
-    on = false
-    for (const s of series) {
-      if (!s.value || s.value.lat == null) continue
-      if (s.t > f.timeSec) break
-      on ? ctx.lineTo(px(s.value), py(s.value)) : (ctx.moveTo(px(s.value), py(s.value)), (on = true))
-    }
-    if (on) ctx.lineTo(cx, cy)
+    if (pathTrack(ctx, series, toXY, gapSec, f.timeSec)) ctx.lineTo(cx, cy)
     ctx.stroke()
     // just-travelled — the last RECENT_TRAIL_SEC of travel, drawn over the dim layer
     // above, fading from full opacity (now) down to RECENT_TRAIL_MIN_ALPHA (the oldest
@@ -277,6 +296,7 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     for (let i = 1; i < recentPts.length; i++) {
       const a = recentPts[i - 1]
       const b = recentPts[i]
+      if (b.t - a.t > gapSec) continue // don't bridge a signal hole with a trail segment
       const frac = recentSpan > 0 ? Math.max(0, Math.min(1, (b.t - recentStart) / recentSpan)) : 1
       const alpha = RECENT_TRAIL_MIN_ALPHA + (1 - RECENT_TRAIL_MIN_ALPHA) * frac
       ctx.strokeStyle = `rgba(131, 224, 0, ${alpha.toFixed(3)})`
@@ -733,18 +753,15 @@ class Track extends Layer {
     ctx.clip()
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
-    // dark outline then white line
+    // dark outline then white line; a signal hole (inter-sample gap > the gps
+    // channel's maxGap — where the widgets freeze) lifts the pen instead of
+    // drawing a straight bridge across it (pathTrack)
+    const gapSec = f.data.maxGap?.('gps') ?? Infinity
     for (const [color, width] of [['rgba(0,0,0,0.5)', 6], [WHITE, 3]]) {
       ctx.strokeStyle = color
       ctx.lineWidth = width
       ctx.beginPath()
-      series.forEach((s, i) => {
-        const v = s.value
-        if (!v || v.lat == null) return
-        const [px, py] = project(v.lat, v.lon)
-        if (i === 0) ctx.moveTo(px, py)
-        else ctx.lineTo(px, py)
-      })
+      pathTrack(ctx, series, (v) => project(v.lat, v.lon), gapSec)
       ctx.stroke()
     }
     // current position dot — entering a no-signal hold grows it to 2x, keeps it ACCENT
