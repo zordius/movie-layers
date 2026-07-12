@@ -157,7 +157,12 @@ function fmtBytes(n) {
  */
 function logSourceSummary({ segments = [], timezone = null, files = [], log }) {
   const totalSec = segments.reduce((s, seg) => s + (seg.durationSec ?? 0), 0)
-  const anchored = segments.filter((s) => s.startUtc != null)
+  // span from RELIABLE anchors (gps / explicit / continued-from-reliable) when any
+  // exist — one clip with a wrong camera clock (a weak `meta` anchor) must not
+  // stretch the reported span across years; meta-only renders still use meta.
+  const anchoredAll = segments.filter((s) => s.startUtc != null)
+  const reliable = anchoredAll.filter((s) => s.clockSource === 'gps' || s.clockSource === 'explicit' || s.clockSource === 'continued')
+  const anchored = reliable.length ? reliable : anchoredAll
   let span = '(no wall clock)'
   if (anchored.length) {
     const last = anchored[anchored.length - 1]
@@ -167,6 +172,10 @@ function logSourceSummary({ segments = [], timezone = null, files = [], log }) {
       return timezone ? d.toLocaleString('sv-SE', { timeZone: timezone }) : d.toISOString()
     }
     span = `${fmt(anchored[0].startUtc)} → ${fmt(last.startUtc + last.durationSec * 1000)}${timezone ? ` (${timezone})` : ''}`
+    // a span wildly beyond the footage length usually means a wrong camera clock
+    // on some segment — say so instead of letting a 5-year span pass silently
+    const spanSec = (last.startUtc + last.durationSec * 1000 - anchored[0].startUtc) / 1000
+    if (spanSec > 30 * 86400) span += ' — span looks implausible (a segment may carry a wrong camera clock)'
   }
   log(`  footage: ${span}, ${fmtDur(totalSec)}`)
   const bytes = files.reduce((sum, f) => {

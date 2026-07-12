@@ -164,7 +164,7 @@ export default function gopro(opts = {}) {
       const clocks = [] // per-segment GPS wall-clock candidates (§5)
       const dspeed = [] // GPS-derived speed, used only if the device reported none (dashboard-spec §3)
       const speedWindowSec = opts.speedWindowSec ?? 1
-      let timezone = null
+      const tzVotes = new Map() // per-file tz candidates → majority wins (below)
 
       // Elevation smoothing (default ON): gpx-stabilizer rewrites each survivor's `ele`
       // to a slope-stable value, so the derived `gradient` stops jittering (raw GPS
@@ -196,7 +196,7 @@ export default function gopro(opts = {}) {
           ...(opts.rate != null ? { rate: opts.rate } : {}),
           stabilize: stab,
         })
-        if (timezone == null && res.timezone) timezone = res.timezone // first segment with a tz wins
+        if (res.timezone) tzVotes.set(res.timezone, (tzVotes.get(res.timezone) ?? 0) + 1)
         const good = goodFixes(res.points)
         if (good.length === 0) continue
         // Anchor on the contract's best start: the regression-verified true-start
@@ -218,6 +218,11 @@ export default function gopro(opts = {}) {
       // drop channels that stayed empty (e.g. no altitude anywhere)
       const out = {}
       for (const [name, ch] of Object.entries(channels)) if (ch.samples.length) out[name] = ch
+
+      // timezone: MAJORITY vote across files (ties → first seen, Map preserves
+      // insertion order) — "first file wins" let one clip with garbage pre-lock
+      // GPS points steer the whole render's timezone.
+      const timezone = [...tzVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
 
       // timezone + per-segment GPS clock candidates flow up to the engine; DataSet
       // captures them and the engine adjudicates per spec §5 (explicit > GPS >
