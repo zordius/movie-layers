@@ -62,6 +62,7 @@ export class Engine {
     channelMerge = {}, // { channel: providerName } — precedence on conflict (default: last wins)
     gaugeSmoothing = true, // default presentation smoothing for gauge widgets (dashboard-spec §2)
     layout = [], // [{ type, ...config }] resolved against providers
+    metadata = {}, // extra output-container tags (`-metadata k=v`), e.g. encoder/comment provenance
     ffmpegOptions = {},
     precomputed = null, // { width, height, baseVideos, baseVideoDurations, segments, timezone,
     //   channels } from a prior prepareData() call — skips probing + provider data-loading +
@@ -86,6 +87,7 @@ export class Engine {
     this.channelMerge = channelMerge
     this._gaugeSmoothing = gaugeSmoothing
     this.layoutSpec = layout
+    this.metadata = metadata
     this.ffmpegOptions = ffmpegOptions
     this._precomputed = precomputed
 
@@ -573,6 +575,7 @@ export class Engine {
       return concatCopy(this.baseVideos, this.output, {
         ffmpeg: this.ffmpegOptions.ffmpeg,
         creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
+        metadata: this.metadata,
         onCommand,
       })
     }
@@ -587,6 +590,7 @@ export class Engine {
       output: this.output,
       pixfmt: 'rgba',
       creationTime: anchorMs != null ? new Date(anchorMs).toISOString() : null,
+      metadata: this.metadata,
       onCommand,
       seekSec: this._renderStartSec,
       // cut the chunk to its window length (overlay filter length follows the longer base)

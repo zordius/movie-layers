@@ -143,6 +143,32 @@ function fmtDur(sec) {
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
 }
 
+/** This CLI's own published version (for output provenance metadata). */
+function ownVersion() {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  } catch {
+    return 'unknown'
+  }
+}
+
+// flags whose value is a filesystem path — stripped (flag AND value) from the
+// argv echoed into output metadata, alongside the positional input paths
+const PATH_FLAGS = new Set(['--out', '--gpx', '--map-cache', '--profile-file', '--precomputed'])
+
+/** Argv reduced to non-path flags/values, for the output's provenance comment. */
+function metaArgv(rawArgv) {
+  const out = []
+  for (let i = 0; i < rawArgv.length; i++) {
+    const t = rawArgv[i]
+    if (PATH_FLAGS.has(t)) i++ // drop the flag and its path value
+    else if (VALUE_FLAGS.has(t)) out.push(t, rawArgv[++i] ?? '')
+    else if (t.startsWith('-')) out.push(t)
+    // positionals (input paths) dropped
+  }
+  return out.join(' ')
+}
+
 /** Human-readable byte count: `1.23 GB` / `45.6 MB` / `789 KB`. */
 function fmtBytes(n) {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`
@@ -465,6 +491,10 @@ async function renderParallel({
   inputFps,
   inputBytes,
   precomputedPath,
+  creationTime = null, // ISO wall-clock anchor for the FINAL concat's metadata — the
+  //                      chunks each carry it, but ffmpeg's concat demuxer does NOT
+  //                      propagate per-file global metadata to the output
+  metadata = {}, // provenance tags for the final concat (same non-propagation reason)
   quiet,
   log,
 }) {
@@ -557,7 +587,10 @@ async function renderParallel({
     }),
   )
   if (tty && !quiet) process.stdout.write('\n')
-  await concatCopy(chunks, out, {})
+  log(`concat: ${chunks.length} chunks → ${out}`)
+  const tConcat = Date.now()
+  await concatCopy(chunks, out, { creationTime, metadata })
+  log(`concat: done in ${((Date.now() - tConcat) / 1000).toFixed(1)}s`)
   for (const f of [...chunks, precomputedPath]) {
     try {
       unlinkSync(f)
@@ -792,6 +825,20 @@ async function main() {
     }
   }
 
+  // Output provenance metadata (standard mov tags: `encoding_tool` = the
+  // producing tool — lands in the ©too atom, which ffprobe reports as `encoder`;
+  // a literal `-metadata encoder=` would be overwritten by the muxer's own Lavf
+  // tag — and `comment` = how it was produced: version, non-path args, input
+  // count, sidecar use). Written by the encode itself and by the --jobs final
+  // concat (the concat demuxer doesn't propagate per-chunk metadata).
+  const version = ownVersion()
+  const outputMetadata = {
+    encoding_tool: `movie-layers ${version}`,
+    comment:
+      `movie-layers ${version}; args: ${metaArgv(process.argv.slice(2)) || '(none)'}; ` +
+      `inputs: ${files.length} video file(s); gpx sidecar: ${args.gpx ? 'yes' : 'no'}`,
+  }
+
   // providers (full dashboard with data; datetime-or-nothing without)
   const providers = dataProvider
     ? [...(clockProvider ? [clockProvider] : []), dataProvider, dashboard, datetime, ...(mapCfg ? [mapProvider] : [])]
@@ -918,6 +965,10 @@ async function main() {
         inputFps: widgetFps ?? fps,
         inputBytes: totalInputBytes,
         precomputedPath,
+        // same anchor the single-engine path stamps (engine render()'s anchorMs)
+        creationTime:
+          precomputed.segments[0]?.startUtc != null ? new Date(precomputed.segments[0].startUtc).toISOString() : null,
+        metadata: outputMetadata,
         quiet: args.quiet,
         log,
       })
@@ -951,6 +1002,7 @@ async function main() {
     gaugeSmoothing: !args.noSmooth,
     providers,
     layout,
+    metadata: outputMetadata,
     output: out,
     ffmpegOptions,
   })

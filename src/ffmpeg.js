@@ -66,7 +66,7 @@ export function extractFrame(file, atSec, { ffmpeg = 'ffmpeg', onCommand = null 
  * demuxer (identical codec/res/fps required — GoPro chapters qualify). Ignores
  * fps/scale (there are no frames to render); fast and bit-exact.
  */
-export function concatCopy(files, output, { ffmpeg = 'ffmpeg', creationTime = null, onCommand = null } = {}) {
+export function concatCopy(files, output, { ffmpeg = 'ffmpeg', creationTime = null, metadata = {}, onCommand = null } = {}) {
   return new Promise((resolveP, reject) => {
     let concatFile = null
     let input
@@ -82,6 +82,7 @@ export function concatCopy(files, output, { ffmpeg = 'ffmpeg', creationTime = nu
       ...input,
       '-c', 'copy',
       ...(creationTime ? ['-metadata', `creation_time=${creationTime}`] : []),
+      ...Object.entries(metadata).flatMap(([k, v]) => ['-metadata', `${k}=${v}`]),
       output,
     ]
     onCommand?.([ffmpeg, ...args])
@@ -145,6 +146,7 @@ export class FfmpegPipe {
     outputArgs = DEFAULT_OUTPUT_ARGS,
     filter = '[0:v][1:v]overlay',
     creationTime = null,
+    metadata = {}, // extra container tags (`-metadata k=v`), e.g. encoder/comment provenance
     logLevel = 'error', // ffmpeg -loglevel (quiet the banner/progress; errors still print). null = default
     onCommand = null, // optional callback([ffmpeg, ...args]) — surfaces the command being run
   }) {
@@ -164,6 +166,7 @@ export class FfmpegPipe {
       outputArgs,
       filter,
       creationTime,
+      metadata,
       logLevel,
       onCommand,
     })
@@ -211,6 +214,7 @@ export class FfmpegPipe {
     args.push('-r', String(this.fps), ...this.outputArgs)
     if (this.clipSec != null) args.push('-t', String(this.clipSec))
     if (this.creationTime) args.push('-metadata', `creation_time=${this.creationTime}`)
+    for (const [k, v] of Object.entries(this.metadata)) args.push('-metadata', `${k}=${v}`)
     args.push(this.output)
 
     this.onCommand?.([this.ffmpeg, ...args])
