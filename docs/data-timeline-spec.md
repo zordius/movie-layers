@@ -354,7 +354,10 @@ secondary samples inside a window are inserted and the `drop` names removed.
 The two receivers can disagree by metres, so each window edge gets a `blendSec`
 (default 5 s) linear taper toward the primary's edge value — the splice lands
 exactly on the primary endpoint instead of stepping sideways (short windows
-split the taper evenly; the tail blends on its start side only).
+split the taper evenly; the tail blends on its start side only). A fills entry
+may instead be `{ from, edge: 'hold' }`: the edges stay EMPTY (the gauge
+freezes across them) and the middle splices raw — used for `gradient`, a
+derived ratio a positional taper would corrupt.
 The CLI wires this automatically for a `--gpx` render on a clip with embedded
 GPS (1 min / 100 m thresholds). Runs after both load rounds (§5 two-phase),
 deterministically — `--jobs` chunks recompute identical fills.

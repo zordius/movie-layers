@@ -853,12 +853,19 @@ async function main() {
     : [datetime]
 
   // gpx holes backfilled from the clip's own GPS (engine channelFill): windows
-  // where the sidecar went dark > 1 min while moving > 100 m (or ended early)
+  // where the sidecar went dark > 1 min while moving > 100 m (or ended early).
+  // gradient uses edge:'hold' — frozen through each 5 s edge, gopro's own
+  // gradient inside (a positional blend would fabricate slopes at the seam).
   const channelFill = clockProvider
     ? {
         minGapSec: 60,
         minMoveM: 100,
-        fills: { gps: 'gopro:gps', altitude: 'gopro:altitude', speed: 'gopro:speed' },
+        fills: {
+          gps: 'gopro:gps',
+          altitude: 'gopro:altitude',
+          speed: 'gopro:speed',
+          gradient: { from: 'gopro:gradient', edge: 'hold' },
+        },
         drop: ['gopro:gps', 'gopro:altitude', 'gopro:speed', 'gopro:gradient'],
       }
     : null

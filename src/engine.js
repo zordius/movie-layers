@@ -420,6 +420,13 @@ export class Engine {
    * primary's endpoint instead of stepping sideways. A window shorter than
    * 2×blendSec splits it evenly; the tail (and an edge the secondary doesn't
    * actually reach) blends on the available side only.
+   *
+   * A fills entry may also be `{ from, edge: 'hold' }`: instead of blending, the
+   * first/last `blendSec` of each window stay EMPTY (the channel keeps a hole >
+   * maxGap there, so its gauge freezes across the edge) and the middle splices
+   * the secondary raw — for derived channels like `gradient`, where the two
+   * sources' values are ratios on different baselines and a positional taper
+   * would fabricate slopes at the seam.
    */
   _applyChannelFill(dataset) {
     if (!this.channelFill) return
@@ -439,15 +446,23 @@ export class Engine {
       const totalSec = this.segments.reduce((sum, x) => sum + x.durationSec, 0)
       if (totalSec - s[s.length - 1].t > minGapSec) windows.push([s[s.length - 1].t, Infinity])
       if (windows.length) {
-        for (const [name, from] of Object.entries(fills)) {
+        for (const [name, spec] of Object.entries(fills)) {
+          const { from, edge = 'blend' } = typeof spec === 'string' ? { from: spec } : spec
           const p = dataset.channels.get(name)
           const alt = dataset.channels.get(from)
           if (!p || !alt?.samples.length) continue
           const inserts = []
           for (const [t0, t1] of windows) {
+            const wB = Math.min(blendSec, (Number.isFinite(t1) ? t1 - t0 : Infinity) / 2)
+            if (edge === 'hold') {
+              // leave the edges empty (the gauge freezes across them), splice raw inside
+              const lo = t0 + wB
+              const hi = Number.isFinite(t1) ? t1 - wB : t1
+              for (const m of alt.samples) if (m.t > lo && m.t < hi) inserts.push(m)
+              continue
+            }
             const wins = alt.samples.filter((m) => m.t > t0 && m.t < t1)
             if (!wins.length) continue
-            const wB = Math.min(blendSec, (Number.isFinite(t1) ? t1 - t0 : Infinity) / 2)
             // blend only on edges the secondary actually reaches within the taper
             const da = wins[0].t - t0 <= wB ? valueDelta(sampleAtT(p.samples, t0), sampleAtT(alt.samples, t0)) : null
             const db =
