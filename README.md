@@ -147,8 +147,11 @@ Done:
       layout + `--flip`, `--snapshot` PNG preview, staged logging + ETA, `--open`,
       `--quiet`, `--gpx` (single file, comma-separated files, or a directory — all
       merge into one track, cleaned + elevation-smoothed by default like embedded
-      GPS) / `--clock-offset` / `--no-stabilize` / `--mode NAME` (gpx-stabilizer
-      analysis preset, e.g. `ski` — embedded GPS and `--gpx` alike) flags. Widgets that need GPS or
+      GPS; a sidecar blackout longer than 1 min while moving > 100 m — or the
+      sidecar ending before the footage — is backfilled from the clip's own
+      embedded GPS when it has one) / `--clock-offset` / `--no-stabilize` /
+      `--mode NAME` (gpx-stabilizer analysis preset, e.g. `ski` — embedded GPS
+      and `--gpx` alike) flags. Widgets that need GPS or
       elevation are dropped gracefully (not a crash) when the whole clip has none —
       never based on just a `--range` window
 - [x] Dashboard presentation: per-gauge display smoothing (default-on,

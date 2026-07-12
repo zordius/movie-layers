@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs'
 import { createCanvas, loadImage } from '@napi-rs/canvas'
 
 import { FfmpegPipe, extractFrame, concatCopy } from './ffmpeg.js'
+import { haversineM } from './gradient.js'
 import { Registry } from './layer.js'
 import { DataSet } from './data.js'
 import { Timeline } from './timeline.js'
@@ -34,6 +35,43 @@ function toEpochMs(v) {
  * isFirst, isLast, timeSec, dt, progress, durationSec, fps), segment + wall
  * clock (segment, dateTime, timezone), data accessor, and geometry.
  */
+/** Clamped linear interpolation over t-sorted `{t, value}` samples (numbers or {lat,lon}). */
+function sampleAtT(samples, t) {
+  if (!samples.length) return undefined
+  if (t <= samples[0].t) return samples[0].value
+  if (t >= samples[samples.length - 1].t) return samples[samples.length - 1].value
+  let lo = 0
+  let hi = samples.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (samples[mid].t <= t) lo = mid
+    else hi = mid
+  }
+  const a = samples[lo]
+  const b = samples[hi]
+  const f = b.t - a.t > 0 ? (t - a.t) / (b.t - a.t) : 0
+  if (typeof a.value === 'number' && typeof b.value === 'number') return a.value + (b.value - a.value) * f
+  if (a.value?.lat != null && b.value?.lat != null) {
+    return { lat: a.value.lat + (b.value.lat - a.value.lat) * f, lon: a.value.lon + (b.value.lon - a.value.lon) * f }
+  }
+  return a.value
+}
+
+/** primary − secondary at a splice edge; null when the shapes don't support blending. */
+function valueDelta(pv, sv) {
+  if (typeof pv === 'number' && typeof sv === 'number') return { d: pv - sv }
+  if (pv?.lat != null && sv?.lat != null) return { lat: pv.lat - sv.lat, lon: pv.lon - sv.lon }
+  return null
+}
+
+/** value + delta·w — the taper application (numbers and {lat,lon}). */
+function addDelta(v, delta, w) {
+  if (w <= 0) return v
+  if (delta.d != null && typeof v === 'number') return v + delta.d * w
+  if (delta.lat != null && v?.lat != null) return { ...v, lat: v.lat + delta.lat * w, lon: v.lon + delta.lon * w }
+  return v
+}
+
 export class Engine {
   constructor({
     width = null,
@@ -60,6 +98,11 @@ export class Engine {
     dataProviders = [], // back-compat alias; merged into `providers`
     dataConfig = {}, // passed to each data facet: data({ sources, config })
     channelMerge = {}, // { channel: providerName } — precedence on conflict (default: last wins)
+    channelFill = null, // splice a SECONDARY source into a primary channel's signal holes:
+    //   { minGapSec, minMoveM, fills: { gps: 'gopro:gps', ... }, drop: [...] } — windows are
+    //   found on the primary `gps` channel (gap > minGapSec AND the endpoints moved
+    //   > minMoveM; the tail after gps ends counts too), each fill's samples inside a
+    //   window are inserted, and `drop` names are removed afterwards (see _applyChannelFill)
     gaugeSmoothing = true, // default presentation smoothing for gauge widgets (dashboard-spec §2)
     layout = [], // [{ type, ...config }] resolved against providers
     metadata = {}, // extra output-container tags (`-metadata k=v`), e.g. encoder/comment provenance
@@ -85,6 +128,7 @@ export class Engine {
     this.dataProviders = allProviders.filter((p) => typeof p.data === 'function')
     this.dataConfig = dataConfig
     this.channelMerge = channelMerge
+    this.channelFill = channelFill
     this._gaugeSmoothing = gaugeSmoothing
     this.layoutSpec = layout
     this.metadata = metadata
@@ -359,6 +403,72 @@ export class Engine {
   }
 
   /**
+   * Splice a secondary source into the primary channels' signal holes (Engine
+   * `channelFill`). Fill WINDOWS come from the primary `gps` channel: an
+   * inter-sample gap > `minGapSec` whose endpoints sit > `minMoveM` apart
+   * horizontally (a paused-but-stationary recorder needs no fill), plus the TAIL
+   * — the primary ending > `minGapSec` before the timeline does counts as a
+   * break with nothing after it. Every `fills` pair then inserts the secondary
+   * samples falling strictly inside a window into the primary channel, and the
+   * `drop` names (the secondary channels) are removed so widgets/`needs` never
+   * see them. Deterministic — --jobs chunks recompute identical fills.
+   *
+   * The two sources can disagree by a few metres (different receivers), so each
+   * window edge gets a `blendSec` (default 5 s) linear taper: inserted values
+   * near an edge are shifted by the primary−secondary delta AT that edge, fading
+   * to raw secondary toward the window middle — the splice lands exactly on the
+   * primary's endpoint instead of stepping sideways. A window shorter than
+   * 2×blendSec splits it evenly; the tail (and an edge the secondary doesn't
+   * actually reach) blends on the available side only.
+   */
+  _applyChannelFill(dataset) {
+    if (!this.channelFill) return
+    const { minGapSec = 60, minMoveM = 100, blendSec = 5, fills = {}, drop = [] } = this.channelFill
+    const prim = dataset.channels.get('gps')
+    const sec = dataset.channels.get(fills.gps)
+    if (prim?.samples.length && sec?.samples.length) {
+      const s = prim.samples
+      const windows = []
+      for (let i = 1; i < s.length; i++) {
+        const a = s[i - 1]
+        const b = s[i]
+        if (b.t - a.t > minGapSec && a.value?.lat != null && b.value?.lat != null && haversineM(a.value, b.value) > minMoveM) {
+          windows.push([a.t, b.t])
+        }
+      }
+      const totalSec = this.segments.reduce((sum, x) => sum + x.durationSec, 0)
+      if (totalSec - s[s.length - 1].t > minGapSec) windows.push([s[s.length - 1].t, Infinity])
+      if (windows.length) {
+        for (const [name, from] of Object.entries(fills)) {
+          const p = dataset.channels.get(name)
+          const alt = dataset.channels.get(from)
+          if (!p || !alt?.samples.length) continue
+          const inserts = []
+          for (const [t0, t1] of windows) {
+            const wins = alt.samples.filter((m) => m.t > t0 && m.t < t1)
+            if (!wins.length) continue
+            const wB = Math.min(blendSec, (Number.isFinite(t1) ? t1 - t0 : Infinity) / 2)
+            // blend only on edges the secondary actually reaches within the taper
+            const da = wins[0].t - t0 <= wB ? valueDelta(sampleAtT(p.samples, t0), sampleAtT(alt.samples, t0)) : null
+            const db =
+              Number.isFinite(t1) && t1 - wins[wins.length - 1].t <= wB
+                ? valueDelta(sampleAtT(p.samples, t1), sampleAtT(alt.samples, t1))
+                : null
+            for (const m of wins) {
+              let v = m.value
+              if (da) v = addDelta(v, da, Math.max(0, 1 - (m.t - t0) / wB))
+              if (db) v = addDelta(v, db, Math.max(0, 1 - (t1 - m.t) / wB))
+              inserts.push(v === m.value ? m : { t: m.t, value: v })
+            }
+          }
+          if (inserts.length) dataset.addChannel(name, p.unit, [...p.samples, ...inserts], p.maxGap)
+        }
+      }
+    }
+    for (const name of drop) dataset.channels.delete(name)
+  }
+
+  /**
    * Resolve config + load all provider data + resolve clocks (spec §5) — everything
    * needed to render EXCEPT the canvas/layers/timeline (those are cheap and stay in
    * _scene(); this is the potentially-expensive half, e.g. provider-gopro's per-file GPS
@@ -402,6 +512,11 @@ export class Engine {
     this._resolveClocks(dataset)
 
     if (aligned.length) await dataset.loadFrom(aligned, { ...shared, segments: segmentInfos() })
+
+    // gap-fill a primary channel from a secondary source (e.g. a gpx sidecar's
+    // blackout backfilled by the clip's own embedded GPS) — after BOTH rounds,
+    // so both sources are present
+    this._applyChannelFill(dataset)
 
     // timezone precedence: explicit Engine config > provider-derived (e.g. GPS) > default
     this.timezone = this._timezone ?? dataset.timezone ?? null

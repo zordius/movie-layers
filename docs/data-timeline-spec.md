@@ -343,6 +343,22 @@ new Engine({
 })
 ```
 
+**Channel fill (`channelFill`) ✅** — sample-level splicing, complementing the
+whole-channel merge above: a SECONDARY source (published under prefixed channel
+names, e.g. `gopro({ channelPrefix: 'gopro:' })`) backfills the primary
+channels' signal holes. Windows are found on the primary `gps` channel — an
+inter-sample gap > `minGapSec` whose endpoints moved > `minMoveM` horizontally
+(a paused-but-stationary recorder needs no fill), plus the tail when the
+primary ends > `minGapSec` before the timeline does — then each `fills` pair's
+secondary samples inside a window are inserted and the `drop` names removed.
+The two receivers can disagree by metres, so each window edge gets a `blendSec`
+(default 5 s) linear taper toward the primary's edge value — the splice lands
+exactly on the primary endpoint instead of stepping sideways (short windows
+split the taper evenly; the tail blends on its start side only).
+The CLI wires this automatically for a `--gpx` render on a clip with embedded
+GPS (1 min / 100 m thresholds). Runs after both load rounds (§5 two-phase),
+deterministically — `--jobs` chunks recompute identical fills.
+
 ---
 
 ## 7. Division of labour

@@ -117,6 +117,10 @@ function appendSegment(good, anchorUtc, offset, channels, dspeed, W, minSpan, sp
  *   sidecar supplies the telemetry but the embedded GPS supplies the true-UTC
  *   anchors the sidecar aligns against (spec §5 two-phase load; the container's
  *   `creation_time` is a camera clock, often local time stamped as UTC)
+ * @param {string} [opts.channelPrefix]  publish channels under prefixed names
+ *   (e.g. 'gopro:' → 'gopro:gps') so they never collide with another provider's —
+ *   the engine's `channelFill` (gap splicing) reads them as a secondary source
+ *   while the sidecar keeps owning the plain names
  * @param {(msg:string)=>void} [opts.onLog]  progress callback — extraction is
  *   sequential, one file at a time (each spawns its own ffmpeg dump + gpx-stabilizer
  *   analysis), so a multi-clip folder can otherwise sit silent for minutes; called
@@ -219,9 +223,12 @@ export default function gopro(opts = {}) {
       // (the gaps are handled by maxGap hold, not per-point derivation).
       if (channels.speed.samples.length === 0 && dspeed.length) channels.speed.samples = dspeed
 
-      // drop channels that stayed empty (e.g. no altitude anywhere)
+      // drop channels that stayed empty (e.g. no altitude anywhere); an
+      // opts.channelPrefix namespaces the survivors (secondary-source mode)
       const out = {}
-      for (const [name, ch] of Object.entries(channels)) if (ch.samples.length) out[name] = ch
+      for (const [name, ch] of Object.entries(channels)) {
+        if (ch.samples.length) out[`${opts.channelPrefix ?? ''}${name}`] = ch
+      }
 
       // timezone: MAJORITY vote across files (ties → first seen, Map preserves
       // insertion order) — "first file wins" let one clip with garbage pre-lock

@@ -746,10 +746,18 @@ async function main() {
     if (hasGps) {
       // The sidecar aligns by wall clock, but a container `creation_time` is the
       // camera clock — often LOCAL time stamped as UTC. The clip's own GPS carries
-      // true UTC, so extract it clock-only (no telemetry channels; the sidecar
-      // stays the telemetry source) to anchor the timeline the sidecar aligns to.
-      clockProvider = gopro({ clockOnly: true, stabilize: false, onLog: log })
-      log('  clock: embedded GPS anchors the timeline (sidecar aligns to true UTC)')
+      // true UTC, so extract it to anchor the timeline the sidecar aligns to —
+      // AND publish its channels under a 'gopro:' prefix so the engine's
+      // channelFill can splice them into the sidecar's signal holes (a gpx
+      // blackout > 1 min where the rider moved > 100 m, or the gpx ending early).
+      // The sidecar keeps owning the plain channel names everywhere else.
+      clockProvider = gopro({
+        channelPrefix: 'gopro:',
+        onLog: log,
+        ...(raw ? { stabilize: false } : {}),
+        ...(args.mode && !raw ? { mode: args.mode } : {}),
+      })
+      log('  clock: embedded GPS anchors the timeline (sidecar aligns to true UTC; gpx holes backfilled)')
     }
   } else if (hasGps) {
     // elevation smoothing is the provider default (clean gradient); --no-stabilize = raw
@@ -844,6 +852,17 @@ async function main() {
     ? [...(clockProvider ? [clockProvider] : []), dataProvider, dashboard, datetime, ...(mapCfg ? [mapProvider] : [])]
     : [datetime]
 
+  // gpx holes backfilled from the clip's own GPS (engine channelFill): windows
+  // where the sidecar went dark > 1 min while moving > 100 m (or ended early)
+  const channelFill = clockProvider
+    ? {
+        minGapSec: 60,
+        minMoveM: 100,
+        fills: { gps: 'gopro:gps', altitude: 'gopro:altitude', speed: 'gopro:speed' },
+        drop: ['gopro:gps', 'gopro:altitude', 'gopro:speed', 'gopro:gradient'],
+      }
+    : null
+
   // --precomputed <path> (internal — set by renderParallel() for a --jobs chunk): the
   // parent already probed + loaded all provider data once; reuse it instead of
   // loading again here.
@@ -863,6 +882,7 @@ async function main() {
         inputFps: widgetFps,
         scaleBaseline: baseline,
         clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+        channelFill,
         providers,
       })
       precomputed = await probeEngine.prepareData()
@@ -920,6 +940,7 @@ async function main() {
           inputFps: widgetFps,
           scaleBaseline: baseline,
           clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+          channelFill,
           providers,
           layout,
         })
@@ -999,6 +1020,7 @@ async function main() {
     renderWarmupSec: range && range[0] != null && range[0] !== 0 ? 1.5 : 0,
     scaleBaseline: baseline, // ratio fix: normalize gadget positions to a 1080 logical space
     clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+    channelFill,
     gaugeSmoothing: !args.noSmooth,
     providers,
     layout,
