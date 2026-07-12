@@ -143,6 +143,43 @@ function fmtDur(sec) {
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, '0')}s`
 }
 
+/** Human-readable byte count: `1.23 GB` / `45.6 MB` / `789 KB`. */
+function fmtBytes(n) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`
+  return `${Math.round(n / 1e3)} KB`
+}
+
+/**
+ * Staged-log block printed once telemetry is loaded, just before rendering:
+ * the footage's wall-clock span (start → end, in the render's resolved timezone
+ * when known) + total duration, and the input files' count / total size / dirs.
+ */
+function logSourceSummary({ segments = [], timezone = null, files = [], log }) {
+  const totalSec = segments.reduce((s, seg) => s + (seg.durationSec ?? 0), 0)
+  const anchored = segments.filter((s) => s.startUtc != null)
+  let span = '(no wall clock)'
+  if (anchored.length) {
+    const last = anchored[anchored.length - 1]
+    const fmt = (ms) => {
+      const d = new Date(ms)
+      // sv-SE locale = "YYYY-MM-DD HH:mm:ss", rendered in the resolved timezone
+      return timezone ? d.toLocaleString('sv-SE', { timeZone: timezone }) : d.toISOString()
+    }
+    span = `${fmt(anchored[0].startUtc)} → ${fmt(last.startUtc + last.durationSec * 1000)}${timezone ? ` (${timezone})` : ''}`
+  }
+  log(`  footage: ${span}, ${fmtDur(totalSec)}`)
+  const bytes = files.reduce((sum, f) => {
+    try {
+      return sum + statSync(f).size
+    } catch {
+      return sum
+    }
+  }, 0)
+  const dirs = [...new Set(files.map((f) => dirname(f)))]
+  log(`  input: ${files.length} file(s), ${fmtBytes(bytes)}, from ${dirs.join(', ')}`)
+}
+
 /**
  * Parse one `--range` endpoint: plain seconds ("125", "12.5") or clock time
  * ("1:23", "1:02:03"). A leading "-" ("-30", "-1:30") counts back from the end
@@ -856,6 +893,7 @@ async function main() {
       }, 0)
       const precomputedPath = join(tmpdir(), `ml-precomputed-${process.pid}.json`)
       writeFileSync(precomputedPath, JSON.stringify(precomputed))
+      logSourceSummary({ segments: precomputed.segments, timezone: precomputed.timezone, files, log })
       log(
         jobsExplicit
           ? `movie-layers: parallel render, ${jobs} jobs${files.length > 1 ? ` (${files.length} clips)` : ''}`
@@ -921,6 +959,7 @@ async function main() {
     const range = ch.min != null && ch.max != null ? `  ${ch.min.toFixed(1)}–${ch.max.toFixed(1)} ${ch.unit}` : ''
     log(`  ${name}: ${ch.count} samples${range}`)
   }
+  logSourceSummary({ segments: engine.segments, timezone: engine.timezone, files, log })
 
   // ── Stage 2: render plan ─────────────────────────────────────────────────────
   log(`widgets: ${summary.layers.join(' · ') || '(none — stitch only)'}`)
