@@ -362,6 +362,13 @@ The CLI wires this automatically for a `--gpx` render on a clip with embedded
 GPS (1 min / 100 m thresholds). Runs after both load rounds (§5 two-phase),
 deterministically — `--jobs` chunks recompute identical fills.
 
+The splice windows are also stashed on the `DataSet` (`_fillWindows`), gating
+`DataSet#isBackfilled(t)` alongside a provider-reported `meta.hero10` flag —
+dashboard-spec §4's colour cue, so a viewer can tell a spliced-in reading apart
+from the sidecar's own. Both survive the `prepareData()` → `_scene()`
+JSON-bundle round-trip every render (not just `--jobs`) goes through, the same
+`Infinity`-safe null-then-revive trick `maxGap` already used.
+
 ---
 
 ## 7. Division of labour

@@ -16,6 +16,13 @@ function shown(w, sample, dt) {
 
 // --- style (from sample.png) ---
 const ACCENT = '#83e000' // lime green icons / track dot
+const ACCENT_RGB = '131, 224, 0' // ACCENT's components, for the rgba() literals below
+// GoPro-backfill cue: while a gauge is currently showing a value spliced in from
+// the clip's own embedded GPS (Engine `channelFill`, gated on `meta.hero10` — see
+// DataSet#isBackfilled), several ACCENT-green spots switch to this amber instead,
+// flagging "this reading isn't from the gpx sidecar". Same slots as ACCENT/ACCENT_RGB.
+const BACKFILL = '#ffcc00'
+const BACKFILL_RGB = '255, 204, 0'
 const ACCENT_DIM = '#080' // the mini-map's "travelled long ago" trail, so recent travel
 //   (full ACCENT) reads as visually distinct from old travel
 const RECENT_TRAIL_SEC = 10 // mini-map: how far back "just travelled" extends, fading from
@@ -53,10 +60,10 @@ function stepPauseT(prev, valid, dt) {
   return prev < target ? Math.min(target, prev + step) : Math.max(target, prev - step)
 }
 
-// The current-position dot's pause fill: stays ACCENT green, alpha 1 → 0.5 along the
-// pause ramp (131,224,0 = ACCENT '#83e000' — same literal the recent-trail fade uses).
-function pausedDotFill(pauseT) {
-  return `rgba(131, 224, 0, ${(1 - 0.5 * pauseT).toFixed(3)})`
+// The current-position dot's pause fill: ACCENT green (or BACKFILL amber when the
+// reading is a GoPro-backfilled splice), alpha 1 → 0.5 along the pause ramp.
+function pausedDotFill(pauseT, backfilled = false) {
+  return `rgba(${backfilled ? BACKFILL_RGB : ACCENT_RGB}, ${(1 - 0.5 * pauseT).toFixed(3)})`
 }
 
 // round up to a "nice" 1/2/5 × 10ⁿ value (for a readable metric grid step)
@@ -229,6 +236,62 @@ function pathTrack(ctx, series, toXY, gapSec, untilSec = Infinity) {
   return pen
 }
 
+/**
+ * Like `pathTrack`, but strokes each contiguous same-colour run separately —
+ * used by the inset's "travelled so far" dim trail, whose GoPro-backfilled
+ * stretches (see DataSet#isBackfilled) draw in a different colour than the
+ * rest. `colorAt(t)` picks the stroke colour per point; a colour change (or a
+ * signal-gap pen-lift, same rule as `pathTrack`) closes the current run and
+ * opens a new one continuing visually from the last point. Returns the last
+ * drawn point (`[x,y]` or null) for the caller's own closing stitch.
+ */
+function pathTrackByColor(ctx, series, toXY, gapSec, untilSec, colorAt, lineWidth) {
+  let last = null
+  let prevT = null
+  let curColor = null
+  let open = false
+  ctx.lineWidth = lineWidth
+  const flush = () => {
+    if (open) {
+      ctx.strokeStyle = curColor
+      ctx.stroke()
+      open = false
+    }
+  }
+  for (const s of series) {
+    if (s.t > untilSec) break
+    const v = s.value
+    if (!v || v.lat == null) {
+      flush()
+      last = null
+      prevT = null
+      curColor = null
+      continue
+    }
+    const [x, y] = toXY(v)
+    const gapped = prevT != null && s.t - prevT > gapSec
+    const color = colorAt(s.t)
+    if (gapped || color !== curColor) {
+      flush()
+      ctx.beginPath()
+      if (!gapped && last) {
+        ctx.moveTo(last[0], last[1])
+        ctx.lineTo(x, y)
+      } else {
+        ctx.moveTo(x, y)
+      }
+      curColor = color
+      open = true
+    } else {
+      ctx.lineTo(x, y)
+    }
+    last = [x, y]
+    prevT = s.t
+  }
+  flush()
+  return last
+}
+
 function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
   ctx.fillStyle = 'rgba(0,0,0,0.45)' // backing disc for contrast over the big map
   ctx.beginPath()
@@ -279,11 +342,19 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     pathTrack(ctx, series, toXY, gapSec)
     ctx.stroke()
     // travelled-so-far, dim — the "long ago" base layer (still distinct from the
-    // untravelled GRAY track, but duller than the recent highlight drawn next)
-    ctx.strokeStyle = ACCENT_DIM
-    ctx.beginPath()
-    if (pathTrack(ctx, series, toXY, gapSec, f.timeSec)) ctx.lineTo(cx, cy)
-    ctx.stroke()
+    // untravelled GRAY track, but duller than the recent highlight drawn next).
+    // A GoPro-backfilled stretch draws white/alpha-0.5 instead of the dim green
+    // (pathTrackByColor switches colour per point; DataSet#isBackfilled is the gate).
+    const DIM_BACKFILL = 'rgba(255,255,255,0.5)'
+    const dimColorAt = (t) => (f.data.backfilled(t) ? DIM_BACKFILL : ACCENT_DIM)
+    const lastDim = pathTrackByColor(ctx, series, toXY, gapSec, f.timeSec, dimColorAt, 3)
+    if (lastDim) {
+      ctx.strokeStyle = dimColorAt(f.timeSec)
+      ctx.beginPath()
+      ctx.moveTo(lastDim[0], lastDim[1])
+      ctx.lineTo(cx, cy)
+      ctx.stroke()
+    }
     // just-travelled — the last RECENT_TRAIL_SEC of travel, drawn over the dim layer
     // above, fading from full opacity (now) down to RECENT_TRAIL_MIN_ALPHA (the oldest
     // end of the window). A single stroke can't vary alpha along its length, so this
@@ -299,7 +370,8 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
       if (b.t - a.t > gapSec) continue // don't bridge a signal hole with a trail segment
       const frac = recentSpan > 0 ? Math.max(0, Math.min(1, (b.t - recentStart) / recentSpan)) : 1
       const alpha = RECENT_TRAIL_MIN_ALPHA + (1 - RECENT_TRAIL_MIN_ALPHA) * frac
-      ctx.strokeStyle = `rgba(131, 224, 0, ${alpha.toFixed(3)})`
+      const rgb = f.data.backfilled(b.t) ? BACKFILL_RGB : ACCENT_RGB
+      ctx.strokeStyle = `rgba(${rgb}, ${alpha.toFixed(3)})`
       ctx.beginPath()
       ctx.moveTo(px(a.value), py(a.value))
       ctx.lineTo(px(b.value), py(b.value))
@@ -307,7 +379,7 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     }
     if (recentPts.length) {
       const last = recentPts[recentPts.length - 1]
-      ctx.strokeStyle = ACCENT // the closing stitch to the current dot itself — full opacity
+      ctx.strokeStyle = f.data.backfilled() ? BACKFILL : ACCENT // the closing stitch to the current dot itself — full opacity
       ctx.beginPath()
       ctx.moveTo(px(last.value), py(last.value))
       ctx.lineTo(cx, cy)
@@ -345,7 +417,7 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     ctx.beginPath()
     ctx.arc(cx, cy, dotR + 2, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = pausedDotFill(pauseT)
+    ctx.fillStyle = pausedDotFill(pauseT, f.data.backfilled())
     ctx.beginPath()
     ctx.arc(cx, cy, dotR, 0, Math.PI * 2)
     ctx.fill()
@@ -516,7 +588,7 @@ class Altitude extends Layer {
     const bw = w - 32
     ctx.fillStyle = BLUE
     ctx.fillRect(bx, by, bw, 8)
-    ctx.fillStyle = ACCENT
+    ctx.fillStyle = f.data.backfilled() ? BACKFILL : ACCENT
     ctx.fillRect(bx, by, Math.max(8, bw * frac), 8)
     ctx.textAlign = 'left'
   }
@@ -617,12 +689,15 @@ class Gradient extends Layer {
     }
 
     // grade slope-line through the centre dot (angle = atan(grade%/100); rotation is
-    // damped since `g` is the smoothed gradient)
+    // damped since `g` is the smoothed gradient). GoPro-backfilled reading → amber
+    // instead of the altitude-colour green (frozen edges still read GRAY regardless,
+    // via sgr.valid — see channelFill's edge:'hold' for gradient).
     const ang = Math.atan(g / 100) // + = uphill
     const L = bw / 2
     const dx = Math.cos(ang)
     const dy = -Math.sin(ang) // up = −y
-    ctx.strokeStyle = sgr.valid ? ACCENT : GRAY
+    const gradColor = f.data.backfilled() ? BACKFILL : ACCENT
+    ctx.strokeStyle = sgr.valid ? gradColor : GRAY
     ctx.lineWidth = 2.5
     ctx.lineCap = 'round'
     ctx.beginPath()
@@ -630,7 +705,7 @@ class Gradient extends Layer {
     ctx.lineTo(ccx + L * dx, ccy + L * dy)
     ctx.stroke()
     // centre dot = current altitude (green, altitude colour)
-    ctx.fillStyle = sgr.valid ? ACCENT : GRAY
+    ctx.fillStyle = sgr.valid ? gradColor : GRAY
     ctx.beginPath()
     ctx.arc(ccx, ccy, 3, 0, Math.PI * 2)
     ctx.fill()
@@ -780,7 +855,7 @@ class Track extends Layer {
         ctx.arc(px, py, dotR + 2, 0, Math.PI * 2)
         ctx.fill()
       }
-      ctx.fillStyle = pausedDotFill(pauseT)
+      ctx.fillStyle = pausedDotFill(pauseT, f.data.backfilled())
       ctx.beginPath()
       ctx.arc(px, py, dotR, 0, Math.PI * 2)
       ctx.fill()

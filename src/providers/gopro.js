@@ -170,6 +170,7 @@ export default function gopro(opts = {}) {
       const speedWindowSec = opts.speedWindowSec ?? 1
       const tzVotes = new Map() // per-file tz candidates → majority wins (below)
       const tzVotesVerified = new Map() // …but votes from regression-VERIFIED files outrank all others
+      let hero10 = false // any target is a HERO10 — surfaced for a caller's own UI cue (e.g. --gpx backfill)
 
       // Elevation smoothing (default ON): gpx-stabilizer rewrites each survivor's `ele`
       // to a slope-stable value, so the derived `gradient` stops jittering (raw GPS
@@ -201,6 +202,7 @@ export default function gopro(opts = {}) {
           ...(opts.rate != null ? { rate: opts.rate } : {}),
           stabilize: stab,
         })
+        if (res.meta?.model === 'HERO10') hero10 = true
         const good = goodFixes(res.points)
         if (good.length === 0) continue
         // Anchor on the contract's best start: the regression-verified true-start
@@ -241,7 +243,7 @@ export default function gopro(opts = {}) {
       // timezone + per-segment GPS clock candidates flow up to the engine; DataSet
       // captures them and the engine adjudicates per spec §5 (explicit > GPS >
       // creation_time; continue-time fills gaps; gap detection flags real breaks).
-      return { channels: out, timezone, clocks }
+      return { channels: out, timezone, clocks, meta: { hero10 } }
     },
   }
 }

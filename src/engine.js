@@ -427,6 +427,11 @@ export class Engine {
    * the secondary raw — for derived channels like `gradient`, where the two
    * sources' values are ratios on different baselines and a positional taper
    * would fabricate slopes at the seam.
+   *
+   * The windows are also stashed on `dataset._fillWindows`, read by
+   * `DataSet#isBackfilled` (gated on `dataset.meta.hero10`) — dashboard.js's
+   * widgets use it to render a distinct colour while showing a spliced-in
+   * reading, independent of which `edge` mode produced it.
    */
   _applyChannelFill(dataset) {
     if (!this.channelFill) return
@@ -445,6 +450,9 @@ export class Engine {
       }
       const totalSec = this.segments.reduce((sum, x) => sum + x.durationSec, 0)
       if (totalSec - s[s.length - 1].t > minGapSec) windows.push([s[s.length - 1].t, Infinity])
+      // exposed for DataSet#isBackfilled (dashboard.js's backfill colour cue) —
+      // same windows the splice itself uses, regardless of a per-fill 'hold' edge
+      dataset._fillWindows = windows
       if (windows.length) {
         for (const [name, spec] of Object.entries(fills)) {
           const { from, edge = 'blend' } = typeof spec === 'string' ? { from: spec } : spec
@@ -552,6 +560,11 @@ export class Engine {
           return [name, { unit: c.unit, maxGap: Number.isFinite(c.maxGap) ? c.maxGap : null, samples: c.samples }]
         }),
       ),
+      meta: dataset.meta, // free-form provider facts (e.g. `{ hero10 }`) — DataSet#isBackfilled's gate
+      // channelFill's splice windows, for DataSet#isBackfilled (dashboard.js's backfill colour
+      // cue) — a TAIL window's t1 is Infinity, which JSON.stringify silently nulls; same
+      // null-then-revive trick as maxGap above (`_scene()` revives it on the read side)
+      fillWindows: dataset._fillWindows?.map(([t0, t1]) => [t0, Number.isFinite(t1) ? t1 : null]) ?? null,
     }
   }
 
@@ -576,6 +589,8 @@ export class Engine {
     for (const [name, ch] of Object.entries(bundle.channels)) {
       dataset.addChannel(name, ch.unit, ch.samples, ch.maxGap ?? Infinity)
     }
+    dataset.meta = bundle.meta ?? {}
+    dataset._fillWindows = bundle.fillWindows?.map(([t0, t1]) => [t0, t1 ?? Infinity]) ?? null
 
     // build layers, then fail fast if a declared data need is unmet
     const built = this.layoutSpec.map(({ type, ...config }) => {

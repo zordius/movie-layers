@@ -107,6 +107,19 @@ export class DataSet {
     this.timezone = null // a constant tz candidate a data provider may derive (e.g. GPS → tz)
     this.clocks = new Map() // sourceIndex → wall-clock candidate { startUtc, confidence } (e.g. GPS), §5
     this._owner = new Map() // channel name → provider name owning it (merge precedence across load rounds)
+    this.meta = {} // free-form provider-reported facts (e.g. { hero10: true }) — shallow-merged, first wins per key
+    this._fillWindows = null // [[t0,t1], ...] set by the engine's channelFill splice (null = none)
+  }
+
+  /**
+   * Is `t` inside a channelFill splice window on a camera the caller has flagged
+   * via `meta.hero10` — the gate a widget uses to render its own "this reading
+   * came from the GoPro backfill" colour cue (dashboard.js). `hero10` is a
+   * concrete, opt-in flag (not a stand-in for "any backfill"): the CLI only
+   * sets it because HERO10's GPS is the specific case the cue was built for.
+   */
+  isBackfilled(t) {
+    return !!this.meta.hero10 && !!this._fillWindows && this._fillWindows.some(([t0, t1]) => t > t0 && t < t1)
   }
 
   addChannel(name, unit, samples, maxGap) {
@@ -147,6 +160,8 @@ export class DataSet {
       const result = await provider.data({ sources, segments, config })
       // a provider may report a constant timezone (e.g. derived from GPS); first wins
       if (this.timezone == null && result?.timezone) this.timezone = result.timezone
+      // free-form facts (e.g. provider-gopro's `{ hero10 }`) — shallow merge, first wins per key
+      if (result?.meta) this.meta = { ...result.meta, ...this.meta }
       // …and per-segment wall-clock candidates (e.g. GPS startUtc), keyed by source
       // index; first provider to claim a segment wins, the engine adjudicates (§5).
       // A singular `clock` is accepted as the N=1 shorthand (sourceIndex 0).
@@ -212,6 +227,9 @@ export class DataSet {
       },
       has(name) {
         return set.has(name)
+      },
+      backfilled(t) {
+        return set.isBackfilled(t ?? this._t)
       },
     }
   }

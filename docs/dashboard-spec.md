@@ -113,7 +113,43 @@ ground speed** from the position track:
 
 ---
 
-## 4. Status
+## 4. GoPro-backfill colour cue (dashboard) ✅
+
+When the Engine's `channelFill` (data-timeline-spec §6) splices the clip's own
+embedded GPS into a gpx sidecar's signal holes, the widgets showing a spliced-in
+reading switch from their normal green to **amber** (`BACKFILL '#ffcc00'`), so a
+viewer can tell "this stretch isn't from the sidecar" without checking metadata:
+
+- **Gate** — `DataSet#isBackfilled(t)`: `t` inside a `channelFill` splice window
+  **AND** `dataset.meta.hero10` is true. `hero10` is a deliberate, narrow flag
+  (`provider-gopro` sets it only when `meta.model === 'HERO10'`, gpx-from-gopro's
+  own convention) — the cue is opt-in to the one camera it was built for, not a
+  stand-in for "any backfill happened".
+- **What switches**: the gradient widget's slope-line + centre dot; the altitude
+  bar's green fill; the big map's and inset's current-position dot
+  (`pausedDotFill`); the inset's "just travelled" fading trail. The inset's
+  older "travelled so far" dim trail (normally `ACCENT_DIM`) draws its
+  backfilled stretches as `rgba(255,255,255,0.5)` instead — a dim line reads as
+  "this far back" everywhere, so backfilled history gets its own colour rather
+  than reusing the green family. `pathTrackByColor` (`src/providers/dashboard.js`)
+  splits that one polyline into colour-run substrokes at each backfilled
+  boundary (and at signal gaps, same as `pathTrack`).
+- **Not changed**: the right-edge gradient-scale indicator, the pulsing halo
+  ping, the big map's white/black track outline, the untravelled `GRAY` portion
+  of the inset's full track — none of these represent "the current reading", so
+  they stay as-is.
+- Frozen edges (gradient's `edge:'hold'` fill, data-timeline-spec §6) still read
+  `GRAY` regardless — `sgr.valid` gates that before the backfill colour is ever
+  considered, so a frozen gauge never flashes amber.
+- `meta`/the splice windows survive the Engine's `prepareData()` →
+  `_scene()` JSON-bundle round-trip (the same path `--jobs` chunks and a plain
+  single-engine render both go through) via `bundle.meta` /
+  `bundle.fillWindows` (`Infinity`-safe, mirroring the existing `maxGap`
+  null-then-revive trick).
+
+---
+
+## 5. Status
 
 ✅ **Implemented:**
 
@@ -122,6 +158,8 @@ ground speed** from the position track:
   override); `src/smooth.js`.
 - derived-`speed` fallback (§3) — `speedSamples` shared helper (1 s window),
   triggered only when the `speed` channel is wholly absent; gopro + gpx.
+- GoPro-backfill colour cue (§4) — amber in place of green while a widget shows
+  a `channelFill`-spliced HERO10 reading; `DataSet#isBackfilled`.
 - **source-axis elevation smoothing (adopted)** — gpx-stabilizer now ships it;
   `provider-gopro` enables it by default (`opts.smooth`, default on → forces
   `stabilize`), so `gradient` is computed from slope-stable `ele`. On `GX065132`
