@@ -210,40 +210,17 @@ function reticleScale(series, mppPx) {
 // moving-window mini-map: whole track gray + travelled green, centred on the current
 // position, with a reticle. (Lifted from the old latlon widget; now a map inset.)
 /**
- * Build the track polyline path, lifting the pen wherever the signal broke: an
- * unusable point or an inter-sample time gap > `gapSec` (the gps channel's
- * maxGap — the same threshold that freezes the widgets) starts a new subpath
- * instead of drawing a straight bridge across the hole. `untilSec` truncates
- * (for "travelled so far" passes). Returns whether anything was drawn; the
- * path's current point is the last drawn sample.
- */
-function pathTrack(ctx, series, toXY, gapSec, untilSec = Infinity) {
-  let pen = false
-  let prevT = null
-  for (const s of series) {
-    if (s.t > untilSec) break
-    const v = s.value
-    if (!v || v.lat == null) {
-      pen = false
-      continue
-    }
-    const [x, y] = toXY(v)
-    if (!pen || (prevT != null && s.t - prevT > gapSec)) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-    pen = true
-    prevT = s.t
-  }
-  return pen
-}
-
-/**
- * Like `pathTrack`, but strokes each contiguous same-colour run separately —
- * used by the inset's "travelled so far" dim trail, whose GoPro-backfilled
- * stretches (see DataSet#isBackfilled) draw in a different colour than the
- * rest. `colorAt(t)` picks the stroke colour per point; a colour change (or a
- * signal-gap pen-lift, same rule as `pathTrack`) closes the current run and
- * opens a new one continuing visually from the last point. Returns the last
- * drawn point (`[x,y]` or null) for the caller's own closing stitch.
+ * Build a track polyline, stroking each contiguous same-colour run separately —
+ * every caller here needs colour to vary along the line (a GoPro-backfilled
+ * stretch, see `DataSet#isBackfilled`, draws differently than the rest; pass a
+ * colour-constant `colorAt` for a plain single-colour line). Lifts the pen
+ * wherever the signal broke — an unusable point or an inter-sample time gap >
+ * `gapSec` (the gps channel's maxGap, the same threshold that freezes the
+ * widgets) — instead of drawing a straight bridge across the hole; a colour
+ * change does the same (closes the current run, opens a new one continuing
+ * visually from the last point, so the seam has no gap). `untilSec` truncates
+ * (the inset's "travelled so far" passes). Returns the last drawn point
+ * (`[x,y]`, or `null` if nothing was drawn) for the caller's own closing stitch.
  */
 function pathTrackByColor(ctx, series, toXY, gapSec, untilSec, colorAt, lineWidth) {
   let last = null
@@ -335,7 +312,7 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
     ctx.lineWidth = 3
-    const gapSec = f.data.maxGap?.('gps') ?? Infinity // signal holes lift the pen (pathTrack)
+    const gapSec = f.data.maxGap?.('gps') ?? Infinity // signal holes lift the pen (pathTrackByColor)
     const toXY = (v) => [px(v), py(v)]
     // GoPro-backfilled stretches draw white/alpha-0.3 UNIFORMLY here — travelled
     // or not, past or future — rather than distinguishing GRAY (untravelled) vs
@@ -831,20 +808,17 @@ class Track extends Layer {
     ctx.clip()
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
-    // dark outline (constant — pure contrast backing, not a "reading") then the
-    // white line on top; a signal hole (inter-sample gap > the gps channel's
-    // maxGap — where the widgets freeze) lifts the pen instead of drawing a
-    // straight bridge across it (pathTrack). The white line itself draws a
-    // GoPro-backfilled stretch translucent (rgba(255,255,255,0.3)) instead of
-    // opaque WHITE — same cue + mechanism as the inset's dim trail, but over the
-    // WHOLE track (the big map has no "travelled so far" concept, unlike the inset).
+    // dark outline then the white line on top; a signal hole (inter-sample gap >
+    // the gps channel's maxGap — where the widgets freeze) lifts the pen instead
+    // of drawing a straight bridge across it (pathTrackByColor). Both layers draw a
+    // GoPro-backfilled stretch more transparent — the outline halves again (0.5
+    // → 0.25) on top of the white line's own 0.5 → 0.3, so the whole backfilled
+    // line (backing included) reads as one faded unit against the live track,
+    // uniformly (the big map has no "travelled so far" concept, unlike the inset,
+    // so there is nothing to distinguish here beyond backfilled/not).
     const gapSec = f.data.maxGap?.('gps') ?? Infinity
     const toXY = (v) => project(v.lat, v.lon)
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)'
-    ctx.lineWidth = 6
-    ctx.beginPath()
-    pathTrack(ctx, series, toXY, gapSec)
-    ctx.stroke()
+    pathTrackByColor(ctx, series, toXY, gapSec, Infinity, (t) => (f.data.backfilled(t) ? 'rgba(0,0,0,0.25)' : 'rgba(0,0,0,0.5)'), 6)
     pathTrackByColor(ctx, series, toXY, gapSec, Infinity, (t) => (f.data.backfilled(t) ? 'rgba(255,255,255,0.3)' : WHITE), 3)
     // current position dot — entering a no-signal hold grows it to 2x, keeps it ACCENT
     // green fading to 50% alpha, and fades the black backing border out entirely, all
