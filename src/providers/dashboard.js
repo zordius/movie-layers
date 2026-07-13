@@ -337,16 +337,16 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     ctx.lineWidth = 3
     const gapSec = f.data.maxGap?.('gps') ?? Infinity // signal holes lift the pen (pathTrack)
     const toXY = (v) => [px(v), py(v)]
-    // GoPro-backfilled stretches draw white/alpha-0.5 UNIFORMLY here — travelled
+    // GoPro-backfilled stretches draw white/alpha-0.3 UNIFORMLY here — travelled
     // or not, past or future — rather than distinguishing GRAY (untravelled) vs
     // ACCENT_DIM (travelled): a backfilled reading isn't "not yet reached", it's
     // "not from the sidecar", the same fact regardless of playback position.
-    const DIM_BACKFILL = 'rgba(255,255,255,0.5)'
+    const DIM_BACKFILL = 'rgba(255,255,255,0.3)'
     const fullColorAt = (t) => (f.data.backfilled(t) ? DIM_BACKFILL : GRAY)
     pathTrackByColor(ctx, series, toXY, gapSec, Infinity, fullColorAt, 3)
     // travelled-so-far, dim — the "long ago" base layer (still distinct from the
     // untravelled GRAY track, but duller than the recent highlight drawn next);
-    // backfilled stretches stay the SAME white/alpha-0.5 as the full-track layer
+    // backfilled stretches stay the SAME white/alpha-0.3 as the full-track layer
     // above (fullColorAt), so this pass is a no-op colour-wise there — it only
     // actually changes anything for the NON-backfilled (ACCENT_DIM) portion.
     const dimColorAt = (t) => (f.data.backfilled(t) ? DIM_BACKFILL : ACCENT_DIM)
@@ -835,7 +835,7 @@ class Track extends Layer {
     // white line on top; a signal hole (inter-sample gap > the gps channel's
     // maxGap — where the widgets freeze) lifts the pen instead of drawing a
     // straight bridge across it (pathTrack). The white line itself draws a
-    // GoPro-backfilled stretch translucent (rgba(255,255,255,0.5)) instead of
+    // GoPro-backfilled stretch translucent (rgba(255,255,255,0.3)) instead of
     // opaque WHITE — same cue + mechanism as the inset's dim trail, but over the
     // WHOLE track (the big map has no "travelled so far" concept, unlike the inset).
     const gapSec = f.data.maxGap?.('gps') ?? Infinity
@@ -845,7 +845,7 @@ class Track extends Layer {
     ctx.beginPath()
     pathTrack(ctx, series, toXY, gapSec)
     ctx.stroke()
-    pathTrackByColor(ctx, series, toXY, gapSec, Infinity, (t) => (f.data.backfilled(t) ? 'rgba(255,255,255,0.5)' : WHITE), 3)
+    pathTrackByColor(ctx, series, toXY, gapSec, Infinity, (t) => (f.data.backfilled(t) ? 'rgba(255,255,255,0.3)' : WHITE), 3)
     // current position dot — entering a no-signal hold grows it to 2x, keeps it ACCENT
     // green fading to 50% alpha, and fades the black backing border out entirely, all
     // over PAUSE_ANIM_SEC; recovery plays the same ramp in reverse (see stepPauseT).
