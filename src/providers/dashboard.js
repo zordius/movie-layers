@@ -335,17 +335,20 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
     ctx.lineWidth = 3
-    ctx.strokeStyle = GRAY
     const gapSec = f.data.maxGap?.('gps') ?? Infinity // signal holes lift the pen (pathTrack)
     const toXY = (v) => [px(v), py(v)]
-    ctx.beginPath()
-    pathTrack(ctx, series, toXY, gapSec)
-    ctx.stroke()
-    // travelled-so-far, dim — the "long ago" base layer (still distinct from the
-    // untravelled GRAY track, but duller than the recent highlight drawn next).
-    // A GoPro-backfilled stretch draws white/alpha-0.5 instead of the dim green
-    // (pathTrackByColor switches colour per point; DataSet#isBackfilled is the gate).
+    // GoPro-backfilled stretches draw white/alpha-0.5 UNIFORMLY here — travelled
+    // or not, past or future — rather than distinguishing GRAY (untravelled) vs
+    // ACCENT_DIM (travelled): a backfilled reading isn't "not yet reached", it's
+    // "not from the sidecar", the same fact regardless of playback position.
     const DIM_BACKFILL = 'rgba(255,255,255,0.5)'
+    const fullColorAt = (t) => (f.data.backfilled(t) ? DIM_BACKFILL : GRAY)
+    pathTrackByColor(ctx, series, toXY, gapSec, Infinity, fullColorAt, 3)
+    // travelled-so-far, dim — the "long ago" base layer (still distinct from the
+    // untravelled GRAY track, but duller than the recent highlight drawn next);
+    // backfilled stretches stay the SAME white/alpha-0.5 as the full-track layer
+    // above (fullColorAt), so this pass is a no-op colour-wise there — it only
+    // actually changes anything for the NON-backfilled (ACCENT_DIM) portion.
     const dimColorAt = (t) => (f.data.backfilled(t) ? DIM_BACKFILL : ACCENT_DIM)
     const lastDim = pathTrackByColor(ctx, series, toXY, gapSec, f.timeSec, dimColorAt, 3)
     if (lastDim) {
@@ -732,7 +735,7 @@ class Gradient extends Layer {
     ctx.lineTo(ex + 5, ccy)
     ctx.stroke()
     const gy = ccy - (Math.max(-100, Math.min(100, g)) / 100) * (bh / 2)
-    ctx.fillStyle = sgr.valid ? ACCENT : GRAY
+    ctx.fillStyle = sgr.valid ? gradColor : GRAY
     ctx.beginPath()
     ctx.moveTo(ex + 1, gy) // apex on the box edge, pointing left
     ctx.lineTo(ex + 8, gy - 4.5)
@@ -828,17 +831,21 @@ class Track extends Layer {
     ctx.clip()
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
-    // dark outline then white line; a signal hole (inter-sample gap > the gps
-    // channel's maxGap — where the widgets freeze) lifts the pen instead of
-    // drawing a straight bridge across it (pathTrack)
+    // dark outline (constant — pure contrast backing, not a "reading") then the
+    // white line on top; a signal hole (inter-sample gap > the gps channel's
+    // maxGap — where the widgets freeze) lifts the pen instead of drawing a
+    // straight bridge across it (pathTrack). The white line itself draws a
+    // GoPro-backfilled stretch translucent (rgba(255,255,255,0.5)) instead of
+    // opaque WHITE — same cue + mechanism as the inset's dim trail, but over the
+    // WHOLE track (the big map has no "travelled so far" concept, unlike the inset).
     const gapSec = f.data.maxGap?.('gps') ?? Infinity
-    for (const [color, width] of [['rgba(0,0,0,0.5)', 6], [WHITE, 3]]) {
-      ctx.strokeStyle = color
-      ctx.lineWidth = width
-      ctx.beginPath()
-      pathTrack(ctx, series, (v) => project(v.lat, v.lon), gapSec)
-      ctx.stroke()
-    }
+    const toXY = (v) => project(v.lat, v.lon)
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'
+    ctx.lineWidth = 6
+    ctx.beginPath()
+    pathTrack(ctx, series, toXY, gapSec)
+    ctx.stroke()
+    pathTrackByColor(ctx, series, toXY, gapSec, Infinity, (t) => (f.data.backfilled(t) ? 'rgba(255,255,255,0.5)' : WHITE), 3)
     // current position dot — entering a no-signal hold grows it to 2x, keeps it ACCENT
     // green fading to 50% alpha, and fades the black backing border out entirely, all
     // over PAUSE_ANIM_SEC; recovery plays the same ramp in reverse (see stepPauseT).
