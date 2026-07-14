@@ -27,6 +27,15 @@ import { ensurePanPath, projectTrack, lon2tile, lat2tile, tile2lon, tile2lat, ch
 
 const { createCanvas, loadImage } = canvasPkg
 
+// The resort/city label can carry a JA name — a plain `sans-serif` generic
+// resolves (on macOS via Skia/@napi-rs/canvas) to a font with incomplete kanji
+// coverage: common characters render fine, but a less-common one (e.g. 雫 in
+// 雫石, U+96AB) falls through to a missing-glyph "tofu" box. Try the platform's
+// own CJK sans font FIRST, falling back to the generic keyword for latin text
+// (or on a system without any of these — Linux render boxes, say — where the
+// browser/engine's own CJK fallback, if any, still gets a chance).
+const JA_FONT_STACK = '"Hiragino Sans", "Noto Sans CJK JP", "Noto Sans JP", sans-serif'
+
 const DEFAULT_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
 const DEFAULT_UA = 'movie-layers (OSM basemap overlay; https://github.com/zordius/movie-layers)'
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
@@ -500,7 +509,7 @@ function wrapBySpace(ctx, text, maxWidth) {
 // very light in OSM's default tile style, so plain white text can otherwise
 // disappear into it)
 function strokeAndFill(ctx, text, px, py, fontSize) {
-  ctx.font = `600 ${fontSize}px sans-serif`
+  ctx.font = `600 ${fontSize}px ${JA_FONT_STACK}`
   ctx.lineWidth = Math.max(2, fontSize * 0.18)
   ctx.strokeStyle = 'rgba(0,0,0,0.6)'
   ctx.strokeText(text, px, py)
@@ -552,16 +561,16 @@ class MapLabelLayer extends Layer {
       // edge clears the bottom-left scale label instead of overlapping it.
       let fontSize = maxFont
       const clearX = this.x + SCALE_LABEL_CLEARANCE
-      ctx.font = `600 ${fontSize}px sans-serif`
+      ctx.font = `600 ${fontSize}px ${JA_FONT_STACK}`
       while (fontSize > 10 && px - ctx.measureText(label).width < clearX) {
         fontSize -= 1
-        ctx.font = `600 ${fontSize}px sans-serif`
+        ctx.font = `600 ${fontSize}px ${JA_FONT_STACK}`
       }
       strokeAndFill(ctx, label, px, py, fontSize)
     } else {
       // EN wraps by space instead of shrinking, right-aligned, growing upward from
       // the same bottom-right anchor.
-      ctx.font = `600 ${maxFont}px sans-serif`
+      ctx.font = `600 ${maxFont}px ${JA_FONT_STACK}`
       const maxWidth = this.w - 16
       const lines = wrapBySpace(ctx, label, maxWidth)
       const lineHeight = maxFont * 1.15
