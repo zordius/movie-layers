@@ -181,7 +181,7 @@ export default function gopro(opts = {}) {
       // governs its own elevation handling instead (MODES.ski bundles the identical
       // despike-then-smooth), so `smooth` isn't consulted there. `smooth` requires
       // cleaning, so it forces stabilize on; `stabilize: false` keeps raw points
-      // (no clean, no smooth). See docs/gpx-smoothing-integration.md.
+      // (no clean, no smooth). See docs/dashboard-spec.md §4 (source-axis elevation smoothing).
       const smooth = opts.smooth ?? true
       const stab =
         opts.stabilize === false

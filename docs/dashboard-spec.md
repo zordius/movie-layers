@@ -4,10 +4,9 @@ How the dashboard turns telemetry channels into gauge numbers, and how those
 numbers are kept stable. Companion to
 [`data-timeline-spec.md`](data-timeline-spec.md) (the data + timeline layer).
 
-**Status: §2 display smoothing, §3 derived-`speed` fallback, and §4's source-axis
-elevation smoothing are implemented ✅ (see
-[`gpx-smoothing-integration.md`](gpx-smoothing-integration.md)), including the
-`gradeWindowM` default narrowed from 20 m to **15 m**.**
+**Status: §2 display smoothing, §3 derived-`speed` fallback, §4's GoPro-backfill
+colour cue, and §4's source-axis elevation smoothing (including the
+`gradeWindowM` default narrowed from 20 m to **15 m**) are all implemented ✅.**
 
 ---
 
@@ -163,10 +162,35 @@ viewer can tell "this stretch isn't from the sidecar" without checking metadata:
 - **source-axis elevation smoothing (adopted)** — gpx-stabilizer now ships it;
   `provider-gopro` enables it by default (`opts.smooth`, default on → forces
   `stabilize`), so `gradient` is computed from slope-stable `ele`. On `GX065132`
-  the gradient range drops from raw **−39…26 %** to **−11.8…11.2 %**. `--no-stabilize`
-  keeps raw. (Wiring + acceptance: [`gpx-smoothing-integration.md`](gpx-smoothing-integration.md).)
+  (Hero10 ski clip, `gradientSamples` windowM 20 m) the gradient range drops from
+  raw **−39.4…26.3 %** (333 pts, jitter 1.13 %/step) to `stabilize:{smooth:true}`'s
+  **−11.8…11.2 %** (57 pts, jitter 1.15 %/step) — matching the lib's own proxy
+  evals exactly. `--no-stabilize` keeps raw. Resampling (the lib's other half) is
+  **not adopted** — this repo already samples per-frame at render and dims on
+  `maxGap`, which duplicates what `resample`'s uniform grid + gap-split would add.
+  Device `speed` is dropped by `stabilize` too; the GPS-derived fallback (§3)
+  covers it (confirmed: `channels.speed` 0–34.1 km/h vs the device's 0.3–35.2).
+
+  **`gradeWindowM` narrowing (adopted 2026-07-05).** With elevation now smoothed
+  upstream, `gradeWindowM` (the slope-averaging distance, prior default 20 m) no
+  longer needs to fully compensate for raw-`ele` noise on its own — measured
+  directly on `GX065132.MP4` at five window sizes:
+
+  | `gradeWindowM` | gradient range | jitter |
+  |---|---|---|
+  | 20 (prior default) | −11.8…11.2 % | 1.04 %/step |
+  | **15 (new default)** | **−12.6…12.2 %** | **1.19 %/step** |
+  | 10 | −12.7…13.4 % | 1.43 %/step |
+  | 8 | −13.3…15.4 % | 1.59 %/step |
+  | 5 | −13.3…18.3 % | 1.87 %/step |
+
+  Baseline for comparison: raw (unsmoothed) `ele` at windowM 20 had jitter
+  1.13 %/step. 10 m and narrower already exceed that — the window is no longer
+  compensating enough for per-sample noise, giving back most of what `smooth`
+  gained. 15 m stays comfortably under it while tracking terrain a bit more
+  sharply, so it's the default in `provider-gopro` and `provider-gpx`
+  (`opts.gradeWindowM`); pass `gradeWindowM: 20` to restore the prior behaviour.
 
 The lib's position/elevation stabilization is the high-leverage fix that steadies
 most gauges at the source; this presentation layer is the thin residual-polish on
-top. Resampling (the lib's other half) is **not adopted** — this repo samples
-per-frame and dims on `maxGap`, which already covers it.
+top.
