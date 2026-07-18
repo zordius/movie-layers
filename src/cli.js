@@ -74,7 +74,8 @@ options:
                         YouTube's recommended rate for the source resolution x fps,
                         e.g. 1080p60 → 12M, 1440p60 → 24M, 4K60 → 60M)
   --no-hw               disable auto hardware acceleration (software decode + x264 encode)
-  --clock-offset SEC    signed seconds added to the wall clock (fix a wrong camera clock)
+  --clock-offset SEC    signed seconds (or clock time, e.g. 9:00:00 = 9h, -9:00:00 = -9h)
+                        added to the wall clock (fix a wrong camera clock)
   --no-stabilize        raw GPS (default: clean + smooth elevation → stable gradient)
   --mode NAME           gpx-stabilizer analysis mode (default: core; "ski" adds
                         lift/cable-car detection + a more aggressive elevation despike,
@@ -259,6 +260,22 @@ function numFlag(name, raw, { positive = false } = {}) {
   const n = Number(raw)
   if (!Number.isFinite(n) || (positive && n <= 0)) {
     console.error(`error: --${name} "${raw}" is not a valid${positive ? ' positive' : ''} number`)
+    process.exit(1)
+  }
+  return n
+}
+
+/**
+ * Parse `--clock-offset`: plain (possibly signed) seconds ("30", "-30") or clock time
+ * ("1:23" = 1m23s, "9:00:00" = 9h, "-1:30" = -90s), same grammar as `--range`'s
+ * endpoints (`parseTimeSpec`) — a signed nudge, not a clip-relative position, so
+ * (unlike `--range`) a bare "-" prefix on a clock-time value is a normal negative
+ * offset here, not "from the end".
+ */
+function parseClockOffsetFlag(raw) {
+  const n = raw.includes(':') ? parseTimeSpec(raw) : Number(raw)
+  if (!Number.isFinite(n)) {
+    console.error(`error: --clock-offset "${raw}" — expected signed seconds or clock time (e.g. --clock-offset 9:00:00)`)
     process.exit(1)
   }
   return n
@@ -888,7 +905,7 @@ async function main() {
         fps,
         inputFps: widgetFps,
         scaleBaseline: baseline,
-        clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+        clockOffsetSec: args['clock-offset'] ? parseClockOffsetFlag(args['clock-offset']) : 0,
         channelFill,
         providers,
       })
@@ -946,7 +963,7 @@ async function main() {
           fps,
           inputFps: widgetFps,
           scaleBaseline: baseline,
-          clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+          clockOffsetSec: args['clock-offset'] ? parseClockOffsetFlag(args['clock-offset']) : 0,
           channelFill,
           providers,
           layout,
@@ -1026,7 +1043,7 @@ async function main() {
     // (~1.5 s ≈ 4× the 0.35 s smoothTime; the engine clamps it so it never seeks before 0)
     renderWarmupSec: range && range[0] != null && range[0] !== 0 ? 1.5 : 0,
     scaleBaseline: baseline, // ratio fix: normalize gadget positions to a 1080 logical space
-    clockOffsetSec: args['clock-offset'] ? numFlag('clock-offset', args['clock-offset']) : 0,
+    clockOffsetSec: args['clock-offset'] ? parseClockOffsetFlag(args['clock-offset']) : 0,
     channelFill,
     gaugeSmoothing: !args.noSmooth,
     providers,
