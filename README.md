@@ -138,9 +138,16 @@ Done:
 - [x] Clock resolution: per-segment pick (explicit > GPS > `creation_time`) +
       continue-time fill + back-derive + gap detection; channel-merge precedence;
       timezone resolution (explicit > provider > default); `clockOffsetSec`
-      manual fix for a wrong camera clock; two-phase data load — a sidecar
-      (`needsClock`) provider aligns after GPS clock resolution, so a GoPro +
-      `--gpx` render anchors to true UTC instead of a camera-local `creation_time`
+      manual fix for a wrong camera clock (accepts clock time too, e.g.
+      `--clock-offset 9:00:00`); two-phase data load — a sidecar (`needsClock`)
+      provider aligns after GPS clock resolution, so a GoPro + `--gpx` render
+      anchors to true UTC instead of a camera-local `creation_time`. The GPS clock
+      candidate itself is regression-verified from `time`~`cts` (`gpx-from-gopro`
+      ^0.8.0) even on a track whose chip never reports a real position lock
+      (`fix` stuck at `none` the whole clip) — some chips sync UTC time well
+      before a position fix, so a verified true start still resolves automatically
+      instead of falling back to a wrong `creation_time` and needing a manual
+      `--clock-offset`
 - [x] CLI: `movie-layers <video|dir> [...]` → stitch + overlay; directory input,
       multi-clip concat, GoPro auto-dashboard (GPS cleaned + elevation-smoothed by
       default for a stable gradient), no-GPS pass-through (stitch only), aspect-aware
