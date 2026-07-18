@@ -204,20 +204,27 @@ export default function gopro(opts = {}) {
         })
         if (res.meta?.model === 'HERO10') hero10 = true
         const good = goodFixes(res.points)
-        if (good.length === 0) continue
         // Anchor on the contract's best start: the regression-verified true-start
-        // (so the first fix sits lockDelay into playback, gray before it) when
-        // available, else this segment's own first fix (good[0]).
+        // when available, else this segment's own first fix (good[0]). The
+        // regression runs on gpx-from-gopro's RAW points (before stabilize), so it
+        // can verify even when `good` ends up EMPTY — e.g. stabilize legitimately
+        // cleans away every point of a track that never got a real position lock,
+        // while the chip's UTC time was already synced (fix stays 'none' the whole
+        // clip, but time~cts still fits a slope≈1 line). Report that clock candidate
+        // regardless of whether there's any channel data to build from this segment.
         const verified = res.clock?.verified === true
         if (res.timezone) {
           tzVotes.set(res.timezone, (tzVotes.get(res.timezone) ?? 0) + 1)
           if (verified) tzVotesVerified.set(res.timezone, (tzVotesVerified.get(res.timezone) ?? 0) + 1)
         }
-        const anchor = verified && finite(res.startUtc) ? res.startUtc : good[0].time
+        const anchor = verified && finite(res.startUtc) ? res.startUtc : (good[0]?.time ?? null)
+        if (anchor != null) {
+          clocks.push({ sourceIndex: target.sourceIndex, startUtc: anchor, confidence: 'gps', verified })
+        }
+        if (good.length === 0) continue // no usable position points → nothing to build channels from
         if (!opts.clockOnly) {
           appendSegment(good, anchor, target.offset, channels, dspeed, W, minSpan, speedWindowSec, skiGrade, maxGap)
         }
-        clocks.push({ sourceIndex: target.sourceIndex, startUtc: anchor, confidence: 'gps', verified })
       }
 
       // derived-speed fallback (§3): use it only when the device reported NO speed
