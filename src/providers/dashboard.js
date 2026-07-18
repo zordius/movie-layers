@@ -270,7 +270,7 @@ function pathTrackByColor(ctx, series, toXY, gapSec, untilSec, colorAt, lineWidt
 }
 
 function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
-  ctx.fillStyle = 'rgba(0,0,0,0.45)' // backing disc for contrast over the big map
+  ctx.fillStyle = 'rgba(0,0,0,0.6)' // backing disc for contrast over the big map
   ctx.beginPath()
   ctx.arc(cx, cy, R + 2, 0, Math.PI * 2)
   ctx.fill()
