@@ -740,7 +740,6 @@ async function main() {
   // choose the data provider: --gpx sidecar > embedded GoPro GPS > none (pass-through)
   let dataProvider = null
   let clockProvider = null // clock-only embedded-GPS provider backing a --gpx render (§5)
-  const hasSpeed = true
   if (args.gpx) {
     const gpxFiles = expandGpxInputs(args.gpx)
     if (gpxFiles.length === 0) {
@@ -925,10 +924,11 @@ async function main() {
   const hasGpsChannel = 'gps' in loadedChannels
   const hasAltitudeChannel = 'altitude' in loadedChannels
   const hasGradientChannel = 'gradient' in loadedChannels
+  const hasSpeedChannel = 'speed' in loadedChannels
 
   const layout = dataProvider
     ? defaultLayout({
-        hasSpeed,
+        hasSpeed: hasSpeedChannel,
         hasGps: hasGpsChannel,
         hasAltitude: hasAltitudeChannel,
         hasGradient: hasGradientChannel,
