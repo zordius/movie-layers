@@ -37,6 +37,7 @@ const PANEL = 'rgba(16,20,24,0.65)' // slightly more opaque than the original 0.
 const WHITE = '#ffffff'
 const GRAY = '#8a929b' // provisional value (pre-fix / no signal) — dimmed
 const GRID = 'rgba(255,255,255,0.15)' // track-map grid lines
+const INSET_GRID = 'rgba(255,255,255,0.3)' // moving-window inset's own grid lines
 const FONT = 'sans-serif'
 const MONO = 'Menlo, monospace' // fixed-width for numeric values (no jitter)
 const H = 78 // unified panel height across widgets
@@ -270,7 +271,7 @@ function pathTrackByColor(ctx, series, toXY, gapSec, untilSec, colorAt, lineWidt
 }
 
 function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
-  ctx.fillStyle = 'rgba(0,0,0,0.6)' // backing disc for contrast over the big map
+  ctx.fillStyle = 'rgba(0,0,0,0.7)' // backing disc for contrast over the big map
   ctx.beginPath()
   ctx.arc(cx, cy, R + 2, 0, Math.PI * 2)
   ctx.fill()
@@ -294,7 +295,7 @@ function drawMovingWindow(ctx, cx, cy, R, series, f, sg, sc, pauseT) {
       const spanM = R / mpp // metres from centre to ring
       const e0 = g.lon * kx * 111320 // current easting, metres
       const n0 = g.lat * 111320 // current northing, metres
-      ctx.strokeStyle = GRID
+      ctx.strokeStyle = INSET_GRID
       ctx.lineWidth = 1
       ctx.beginPath()
       for (let e = Math.ceil((e0 - spanM) / STEP) * STEP; e <= e0 + spanM; e += STEP) {
