@@ -35,6 +35,11 @@
  * `mode` presets as provider-gopro; `stabilize: false` = raw). Channels produced:
  * `gps` ({lat,lon}); `speed` / `altitude` when the track carries them; and
  * `gradient` derived from lat/lon/ele via the shared helper (same as provider-gopro).
+ * Also reports a `timezone` (GPS lat/lon → IANA, from the sidecar's own first
+ * placed point) that OVERRIDES any round-1 clock provider's tz (data-timeline-spec
+ * §5 "Multi-provider tie-break") — the dedicated GPS unit backing a `--gpx` render
+ * is normally the trustworthy position source, even when the embedded camera GPS
+ * backing the render's clock never got a real lock.
  *
  * NOTE (clock ordering, spec §5): this provider is marked `needsClock: true`, so
  * the engine loads it in the SECOND data round — after every clock-producing
@@ -47,6 +52,7 @@
  * `clockOffsetSec` — a sidecar has no `cts` link to the frames, so it can never
  * anchor the video by itself (spec §5 "wrong camera clock").
  */
+import { timezoneAt } from 'gpx-from-gopro'
 import { readGpx, stabilize } from 'gpx-stabilizer'
 
 import { gradientSamples, speedSamples } from '../gradient.js'
@@ -230,7 +236,18 @@ export default function gpx(opts = {}) {
       // drop channels that stayed empty (e.g. a track with no <ele>)
       const out = {}
       for (const [n, ch] of Object.entries(channels)) if (ch.samples.length) out[n] = ch
-      return { channels: out }
+
+      // Timezone from the sidecar's OWN first placed point — a dedicated GPS unit
+      // (Garmin/Strava) is the reason a render reaches for --gpx in the first
+      // place, so its position is normally the more trustworthy one; the embedded
+      // camera GPS backing the clock (§5) may have never gotten a real lock at
+      // all. DataSet merges multiple providers' timezone "last wins" (data.js),
+      // and this provider is marked `needsClock` (loads in round 2), so its tz —
+      // when it has one — overrides an earlier round's, with a graceful fallback
+      // to that earlier candidate if this track's own position never resolved one.
+      const timezone = timezoneAt(placedPts[0])
+
+      return { channels: out, timezone }
     },
   }
 }

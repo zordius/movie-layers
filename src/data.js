@@ -158,8 +158,14 @@ export class DataSet {
     const owner = this._owner
     for (const provider of dataProviders) {
       const result = await provider.data({ sources, segments, config })
-      // a provider may report a constant timezone (e.g. derived from GPS); first wins
-      if (this.timezone == null && result?.timezone) this.timezone = result.timezone
+      // a provider may report a constant timezone (e.g. derived from GPS); LAST
+      // non-null wins (not first) — deliberately the opposite of `clocks`/`meta`
+      // below. Across the two-phase load (§5), this means a `needsClock` sidecar
+      // provider's own tz (round 2, e.g. provider-gpx from a dedicated GPS unit)
+      // overrides a round-1 clock provider's (e.g. provider-gopro backing a --gpx
+      // render's clock, whose position may never have gotten a real lock at all),
+      // while still falling back to round 1's candidate if round 2 has none.
+      if (result?.timezone) this.timezone = result.timezone
       // free-form facts (e.g. provider-gopro's `{ hero10 }`) — shallow merge, first wins per key
       if (result?.meta) this.meta = { ...result.meta, ...this.meta }
       // …and per-segment wall-clock candidates (e.g. GPS startUtc), keyed by source

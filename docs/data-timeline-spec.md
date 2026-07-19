@@ -325,8 +325,19 @@ explicit Engine({ timezone })  >  provider-derived (e.g. GPS)  >  default (null 
 Resolved once before the loop (provider `load()` runs up front). Per-segment tz
 (cross-timezone travel) is a future extension, mirroring per-segment `startUtc`;
 today it is one global value. ✅ engine resolution + GPS→tz derivation (provider —
-`provider-gopro` surfaces `gpx-from-gopro`'s `timezoneOfPoints`, an offline
-`tz-lookup` lat/lon→IANA mapping) · 🔜 per-segment tz (cross-timezone travel).
+`provider-gopro` surfaces `gpx-from-gopro`'s `timezoneOfPoints`; `provider-gpx`
+derives its own from the sidecar's first placed point via the same lib's
+`timezoneAt`, an offline `tz-lookup` lat/lon→IANA mapping) · 🔜 per-segment tz
+(cross-timezone travel).
+
+**Multi-provider tie-break: LAST non-null wins** (`DataSet.loadFrom`) — the
+opposite of `clocks`/`meta`'s first-wins. Across the two-phase load above, this
+means a `needsClock` sidecar's own tz (round 2, e.g. `provider-gpx` reading a
+dedicated GPS unit) overrides a round-1 clock provider's (e.g. `provider-gopro`
+backing a `--gpx` render's clock, whose position may never have gotten a real
+lock at all — §5's regression-verified true start only needs `time`~`cts` to
+line up, not a position fix), falling back to round 1's candidate if round 2
+has none.
 
 ---
 
