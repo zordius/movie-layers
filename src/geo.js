@@ -106,7 +106,7 @@ export const SCALE_LABEL_CLEARANCE = 74
  * Returns `{ at(tSec) → {dx,dy}, max: {dx0,dx1,dy0,dy1} }` — `max` is the
  * offsets' componentwise range, used by the basemap to render enough bleed.
  */
-export function ensurePanPath(series, box, { label = false, marginPx = 20 } = {}) {
+export function ensurePanPath(series, box, { label = false, marginPx = 40 } = {}) {
   const key = `${box.x}_${box.y}_${box.w}_${box.h}`
   const hit = panPathCache.get(key)
   if (hit) return hit
@@ -131,10 +131,6 @@ export function ensurePanPath(series, box, { label = false, marginPx = 20 } = {}
   //  - EN: word-wrapped, right-aligned, growing upward — each line is bounded by
   //    `box.w - 16` (map.js's maxWidth), which can span almost the full box width;
   //    height assumes 2 lines (map.js's own working assumption for a short place name).
-  // LABEL_PAD is 2x the other chrome rects' PAD — the place label is the one zone
-  // whose real footprint we can only estimate (the actual resolved name isn't known
-  // yet when this runs, §above), so it gets a bigger safety margin.
-  const LABEL_PAD = PAD * 2
   const jaRect = { x0: box.x + SCALE_LABEL_CLEARANCE, y0: box.y + box.h - (8 + 1.2 * maxFont) }
   const enRect = { x0: box.x + 8, y0: box.y + box.h - (8 + 2.3 * maxFont) }
   const rects = [
@@ -143,10 +139,10 @@ export function ensurePanPath(series, box, { label = false, marginPx = 20 } = {}
     ...(label
       ? [
           {
-            x0: Math.min(jaRect.x0, enRect.x0) - LABEL_PAD,
-            y0: Math.min(jaRect.y0, enRect.y0) - LABEL_PAD,
-            x1: box.x + box.w + LABEL_PAD,
-            y1: box.y + box.h + LABEL_PAD,
+            x0: Math.min(jaRect.x0, enRect.x0) - PAD,
+            y0: Math.min(jaRect.y0, enRect.y0) - PAD,
+            x1: box.x + box.w + PAD,
+            y1: box.y + box.h + PAD,
           },
         ]
       : []),

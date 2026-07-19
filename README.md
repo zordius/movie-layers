@@ -173,8 +173,8 @@ Done:
       ski resort the track enters with `--mode ski`. The track's small
       follow-circle inset keeps its own view (no basemap). The whole-track view
       auto-pans (a precomputed, smoothed path shared by track + basemap) so the
-      current-position dot stays ≥ 20 px from the box edges and clear of the
-      inset / place-label / scale-readout zones
+      current-position dot stays ≥ 40 px from the box edges and clear of the
+      inset / place-label (JA+EN footprint union) / scale-readout zones
 - [x] Encode + render speed: detection-based hardware **encode** auto-upgrade
       (videotoolbox / nvenc / qsv / amf; bitrate follows YouTube's recommended
       upload rate for the source resolution × fps — 1080p60 → 12M, 1440p60 → 24M,
