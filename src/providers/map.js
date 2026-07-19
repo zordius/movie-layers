@@ -23,7 +23,17 @@ import { join } from 'node:path'
 import canvasPkg from '@napi-rs/canvas'
 
 import { Layer, defineProvider } from '../layer.js'
-import { ensurePanPath, projectTrack, lon2tile, lat2tile, tile2lon, tile2lat, chooseZoom, pointInRing } from '../geo.js'
+import {
+  ensurePanPath,
+  projectTrack,
+  lon2tile,
+  lat2tile,
+  tile2lon,
+  tile2lat,
+  chooseZoom,
+  pointInRing,
+  SCALE_LABEL_CLEARANCE,
+} from '../geo.js'
 
 const { createCanvas, loadImage } = canvasPkg
 
@@ -479,11 +489,6 @@ class MapLayer extends Layer {
     ctx.globalAlpha = prev
   }
 }
-
-// Track's bottom-left metric-scale readout (dashboard.js, fixed `600 14px Menlo`,
-// drawn at box.x+6) — a resort name right-aligned on the SAME bottom edge must not
-// grow left past this, so the JA shrink-to-fit below keeps clear of it.
-const SCALE_LABEL_CLEARANCE = 74
 
 // Greedy word-wrap by spaces at the CURRENT ctx.font — used for the EN resort name,
 // which (unlike JA) has real word boundaries. Assumes no single word alone exceeds

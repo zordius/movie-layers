@@ -87,6 +87,14 @@ function projectToSafe(p, safe) {
   return { x: px, y: py }
 }
 
+// Track's bottom-left metric-scale readout (dashboard.js, fixed `600 14px Menlo`,
+// drawn at box.x+6) — a resort name right-aligned on the SAME bottom edge must not
+// grow left past this, so map.js's JA shrink-to-fit keeps clear of it. Exported
+// (not just a map.js-local constant) so the pan-path label zone below reserves
+// the SAME clearance the real label rendering targets — one source of truth,
+// no drift between "where the label may draw" and "where the dot must not go".
+export const SCALE_LABEL_CLEARANCE = 74
+
 /**
  * Compute (or return the cached) pan path for a track box. Both the track widget
  * and the basemap layer call this with the same `box` — whoever runs first
@@ -115,11 +123,32 @@ export function ensurePanPath(series, box, { label = false, marginPx = 20 } = {}
   const PAD = 12
   const R = Math.round(Math.min(box.w, box.h) * 0.153) // inset mini-map radius (dashboard.js)
   const maxFont = Math.max(12, Math.round(box.h * 0.09)) // map-label font (map.js)
+  // The place label toggles JA ↔ EN every 10s (map.js), and the two render with
+  // DIFFERENT worst-case footprints — a rect sized for only one language lets the
+  // dot wander into the other's text once it toggles. Union both:
+  //  - JA: one line, right-aligned, SHRINKS to keep its left edge clear of the
+  //    scale readout — so its width is bounded by that clearance, not by box.w.
+  //  - EN: word-wrapped, right-aligned, growing upward — each line is bounded by
+  //    `box.w - 16` (map.js's maxWidth), which can span almost the full box width;
+  //    height assumes 2 lines (map.js's own working assumption for a short place name).
+  // LABEL_PAD is 2x the other chrome rects' PAD — the place label is the one zone
+  // whose real footprint we can only estimate (the actual resolved name isn't known
+  // yet when this runs, §above), so it gets a bigger safety margin.
+  const LABEL_PAD = PAD * 2
+  const jaRect = { x0: box.x + SCALE_LABEL_CLEARANCE, y0: box.y + box.h - (8 + 1.2 * maxFont) }
+  const enRect = { x0: box.x + 8, y0: box.y + box.h - (8 + 2.3 * maxFont) }
   const rects = [
     { x0: box.x + 10 - PAD, y0: box.y + 10 - PAD, x1: box.x + 10 + 2 * R + PAD, y1: box.y + 10 + 2 * R + PAD },
     { x0: box.x - PAD, y0: box.y + box.h - 26 - PAD, x1: box.x + 84 + PAD, y1: box.y + box.h + PAD }, // scale readout
     ...(label
-      ? [{ x0: box.x + box.w * 0.4, y0: box.y + box.h - (8 + 2.3 * maxFont) - PAD, x1: box.x + box.w + PAD, y1: box.y + box.h + PAD }]
+      ? [
+          {
+            x0: Math.min(jaRect.x0, enRect.x0) - LABEL_PAD,
+            y0: Math.min(jaRect.y0, enRect.y0) - LABEL_PAD,
+            x1: box.x + box.w + LABEL_PAD,
+            y1: box.y + box.h + LABEL_PAD,
+          },
+        ]
       : []),
   ]
   const safe = {
