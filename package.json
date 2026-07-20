@@ -53,7 +53,7 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.0",
-    "gpx-from-gopro": "^0.8.0",
-    "gpx-stabilizer": "^0.8.0"
+    "gpx-from-gopro": "^0.9.0",
+    "gpx-stabilizer": "^0.9.0"
   }
 }
